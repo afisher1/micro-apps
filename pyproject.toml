@@ -22,13 +22,13 @@ ignore_patterns = [
     "dist/**",
     "docs/**"
 ]
- 
+
 [tool.yapf]
 based_on_style = "pep8"
 spaces_before_comment = 4
 column_limit = 99
 split_before_logical_operator = true
- 
+
 [tool.mypy]
 show_error_context = true
 pretty = true
