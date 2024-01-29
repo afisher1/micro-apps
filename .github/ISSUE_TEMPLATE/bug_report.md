@@ -25,7 +25,7 @@ If applicable, add screenshots to help explain your problem.
 
 **Operating System (please complete the following information):**
  - OS: [e.g. iOS]
- - Volttron Version [develop, releases/8.2, main]
+ - Repo Version [develop, releases/8.2, main]
 
 **Additional context**
 Add any other context about the problem here.
