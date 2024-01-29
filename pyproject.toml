@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "micro-apps"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gridappsd-python = "^2023.12.1"
+cim-graph = "^0.1.2a0"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^3.6.0"
+yapf = "^0.40.2"
+mypy = "^1.8.0"
+
+[tool.yapfignore]
+ignore_patterns = [
+    ".venv/**",
+    ".pytest_cache/**",
+    "dist/**",
+    "docs/**"
+]
+
+[tool.yapf]
+based_on_style = "pep8"
+spaces_before_comment = 4
+column_limit = 99
+split_before_logical_operator = true
+
+[tool.mypy]
+show_error_context = true
+pretty = true
+show_column_numbers = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
