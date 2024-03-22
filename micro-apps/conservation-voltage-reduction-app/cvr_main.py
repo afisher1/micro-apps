@@ -1,12 +1,15 @@
 import importlib
 from argparse import ArgumentParser
+from datetime import datetime
 from typing import Any, Dict
+from uuid import uuid4
 
 import cimgraph.utils as cimUtils
 from cimgraph.databases import ConnectionParameters
 from cimgraph.databases.blazegraph.blazegraph import BlazegraphConnection
 from cimgraph.models import FeederModel
 from gridappsd import GridAPPSD, topics
+from gridappsd.simulation import *
 
 
 class ConservationVoltageReductionController(object):
@@ -70,87 +73,240 @@ class ConservationVoltageReductionController(object):
                 Returns: NA.
             cvr_control(): This is the main function for performing the cvr control.
     """
-    perod = 600
+    period = 600
 
-    def __init__(self, period: int = None, sim_id: str = None, model_id: str = None):
+    def __init__(self, model_id: str, period: int = None, sim_id: str = None, simulation: Simulation = None):
+        if not isinstance(model_id, str):
+            raise TypeError(f'the model_id must be a str type.')
+        if model_id is None or model_id == '':
+            raise ValueError(f'model_id must be a valid uuid.')
         if not isinstance(period, int) and period is not None:
             raise TypeError(f'The period must be an int type or {None}!')
         if not isinstance(sim_id, str) and sim_id is not None:
             raise TypeError(f'The simulation id must be a string type or {None}!')
-        self.cim_profile = 'rc4_2021'
-        self.iec61970_301 = 7
-        self.cim = importlib.import_module(f'cimgraph.data_profile.{self.cim_profile}')
-        params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
-                                      cim_profile=self.cim_profile,
-                                      iec61970_301=self.iec61970_301)
-        self.db_connection = BlazegraphConnection(params)
-        feeder_container = self.cim.Feeder(mRID=model_id)
-        self.graph_model = FeederModel(connection=self.db_connection, container=feeder_container, distributed=False)
+        if not isinstance(simulation, str) and simulation is not None:
+            raise TypeError(f'The simulation id must be a Simulation type or {None}!')
+        self.id = uuid4()
         self.platform_measurements = {}
         self.last_setpoints = {}
         self.desired_setpoints = {}
         self.controllable_regulators = {}
-        self.controllable_capacitors = []
+        self.controllable_capacitors = {}
         self.measurements = {}
-        self.gapps = GridAPPSD(simulation_id=sim_id)
+        if period is None:
+            self.period = ConservationVoltageReductionController.period
+        else:
+            self.period = period
         self.measurements_topic = None
+        if simulation is not None:
+            simulation.add_onmeasurement_callback(self.on_measurement_callback)
         if sim_id is None:
             measurements_topic = topics.field_output_topic(None, sim_id)
         else:
             measurements_topic = topics.simulation_output_topic(sim_id)
-        self.gapps.subscribe(measurements_topic, self.on_measurement)
-        #read model_id from cimgraph to get all the controllable regulators and capacitors.
-        self.graph_model.get_all_edges(self.cim.PowerTransformer)
-        self.graph_model.get_all_edges(self.cim.TransformerTank)
-        self.graph_model.get_all_edges(self.cim.Asset)
-        self.graph_model.get_all_edges(self.cim.LinearShuntCompensator)
-        self.graph_model.get_all_edges(self.cim.PowerTransformerEnd)
-        self.graph_model.get_all_edges(self.cim.TransformerEnd)
-        self.graph_model.get_all_edges(self.cim.TransformerMeshImpedance)
-        self.graph_model.get_all_edges(self.cim.TransformerTankEnd)
-        self.graph_model.get_all_edges(self.cim.TransformerTankInfo)
-        self.graph_model.get_all_edges(self.cim.LinearShuntCompensatorPhase)
-        self.graph_model.get_all_edges(self.cim.Terminal)
-        self.graph_model.get_all_edges(self.cim.ConnectivityNode)
-        self.graph_model.get_all_edges(self.cim.BaseVoltage)
-        self.graph_model.get_all_edges(self.cim.TransformerEndInfo)
-        self.graph_model.get_all_edges(self.cim.Analog)
-        self.graph_model.get_all_edges(self.cim.Discrete)
-        #Store controllable_capacitors
-        self.controllable_capacitors = list(self.graph_model.graph.get(self.cim.LinearShuntCompensator, {}))
-        #Store controllable_regulators
-        powerTransformers = self.graph_model.graph.get(self.cim.PowerTransformer, {})
+        self.gapps.subscribe(measurements_topic, self.on_measurement_callback)
+        # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
+        self.graph_model = buildGraphModel(model_id)
+        # Store controllable_capacitors
+        self.controllable_capacitors = self.graph_model.graph.get(cim.LinearShuntCompensator, {})
+        # Store controllable_regulators
+        powerTransformers = self.graph_model.graph.get(cim.PowerTransformer, {})
         for mRID, powerTransformer in powerTransformers.items():
             for transformerTank in powerTransformer.TransformerTanks:
                 for transformerEnd in transformerTank.TransformerTankEnds:
-                    if transformerEnd.RatioTapChanger is not None:
+                    if transformerEnd.RatioTapChanger is not None and transformerEnd.Terminal.sequenceNumber == 1:
                         if mRID not in self.controllable_regulators.keys():
                             self.controllable_regulators[mRID] = {}
+                        self.controllable_regulators[mRID]['name'] = f'reg_{powerTransformer.name}'
+                        self.controllable_regulators[mRID][f'max_tap_{transformerEnd.phases.value}'] = \
+                            transformerEnd.RatioTapChanger.highStep
+                        self.controllable_regulators[mRID][f'min_tap_{transformerEnd.phases.value}'] = \
+                            transformerEnd.RatioTapChanger.lowStep
+        # Store measurements of voltages, loads, pv, battery, capacitor status, and regulator taps.
+        measurements = self.graph_model.graph.get(cim.Analog, {})
+        measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
+        for mrid, meas in measurements.items():
+            if meas.measurementType == 'PNV':    #it's a voltage measurement. store it.
+                self.measurements[mrid] = {'measurement_object': meas, 'measurement_value': {}}
+            elif meas.measurementType == 'VA':    #it's a power measurement.
+                if isinstance(meas.PowerSystemResource, (cim.EnergyConsumer, cim.PowerElectronicsConnection)):
+                    self.measurements[mrid] = {'measurement_object': meas, 'measurement_value': {}}
+            elif meas.measurementType == 'Pos':
+                self.measuremnts[mrid] = {'measurement_object': meas, 'measurement_value': {}}
 
-        #TODO: read model from cimgraph to get end of line voltages.
+    def on_measurement(self, timestamp: str, measurements: Dict[str, Dict]):
+        for mrid in self.measurements.keys():
+            meas = measurements.get(mrid)
+            if meas is not None:
+                self.measurements[mrid]['measurement_value'] = meas
+        #TODO: check for voltage violations and adjust cvr setpoints accordingly
 
-    def on_measurement(self, headers: Dict[Any], message: Dict[Any]):
-        #TODO: Updated self.platform_measurements with latest measurements from measurement topic.
-        pass
+    def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
+        timestamp = message.get('message', {}).get('timestamp', '')
+        measurements = message.get('message', {}).get('measurements', {})
+        self.on_measurement(timestamp, measurements)
+
+    def create_opendss_context(self):
+        message = {
+            'configurationType': 'DSS Base',
+            'parameters': {
+                'i_fraction': '1.0',
+                'z_fraction': '0.0',
+                'model_id': self.graph_model.container.mRID,
+                'load_scaling_factor': '1.0',
+                'schedule_name': 'ieeezipload',
+                'p_fraction': '0.0'
+            }
+        }
+        base_dss_str = gapps.get_response(topics.CONFIG, message)
+        base_dss_str = base_dss_str.replace('{"data":', '')
+        endOfBase = base_dss_str.find('calcv\n') + len('calcv\n')
+        fileDir = Path(__file__).parent / 'app_instances' / f'{self.id}' / 'master.dss'
+        with fileDir.open(mode='w') as f_master:
+            f_master.write(base_dss_str[:endOfBase])
 
 
-def _main(model_id: str = None):
-    #TODO: connect to the running GridAPPS-D platfrom
-    global gapps_main, logger_main
-    gapps_main = None
+def buildGraphModel(mrid: str) -> FeederModel:
+    if not isinstance(mrid, str):
+        raise TypeError(f'The mrid passed to the convervation voltage reduction application must be a string.')
+    if mrid not in cim_graph_models.keys():
+        feeder_container = cim.Feeder(mRID=mrid)
+        graph_model = FeederModel(connection=db_connection, container=feeder_container, distributed=False)
+        graph_model.get_all_edges(cim.PowerTransformer)
+        graph_model.get_all_edges(cim.TransformerTank)
+        graph_model.get_all_edges(cim.Asset)
+        graph_model.get_all_edges(cim.LinearShuntCompensator)
+        graph_model.get_all_edges(cim.PowerTransformerEnd)
+        graph_model.get_all_edges(cim.TransformerEnd)
+        graph_model.get_all_edges(cim.TransformerMeshImpedance)
+        graph_model.get_all_edges(cim.TransformerTankEnd)
+        graph_model.get_all_edges(cim.TransformerTankInfo)
+        graph_model.get_all_edges(cim.LinearShuntCompensatorPhase)
+        graph_model.get_all_edges(cim.Terminal)
+        graph_model.get_all_edges(cim.ConnectivityNode)
+        graph_model.get_all_edges(cim.BaseVoltage)
+        graph_model.get_all_edges(cim.TransformerEndInfo)
+        graph_model.get_all_edges(cim.Analog)
+        graph_model.get_all_edges(cim.Discrete)
+        cim_graph_models[mrid] = deepcopy(graph_model)
+    return cim_graph_models[mrid]
+
+
+def createSimulation(model_info: Dict[str, Any]) -> Simulation:
+    if not isinstance(model_info, dict):
+        raise TypeError(f'The model_id must be a dictionary type.')
+    line_name = model_info.get('modelId')
+    subregion_name = model_info.get('subRegionId')
+    region_name = model_info.get('regionId')
+    sim_name = model_info.get('modelName')
+    if line_name is None:
+        raise ValueError(f'Bad model info dictionary. The dictionary is missing key modelId.')
+    if subregion_name is None:
+        raise ValueError(f'Bad model info dictionary. The dictionary is missing key subRegionId.')
+    if region_name is None:
+        raise ValueError(f'Bad model info dictionary. The dictionary is missing key regionId.')
+    if sim_name is None:
+        raise ValueError(f'Bad model info dictionary. The dictionary is missing key modelName.')
+    psc = PowerSystemConfig(Line_name=line_name,
+                            SubGeographicalRegion_name=subregion_name,
+                            GeographicalRegion_name=region_name)
+    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    sim_args = SimulationArgs(start_time=f'{start_time}', duration=f'{24*3600}', simulation_name=sim_name)
+    sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
+    return Simulation(gapps, sim_config)
+
+
+def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
+    if not isinstance(control_enabled, bool):
+        raise TypeError(f'Argument, control_enabled, must be a boolean.')
+    if not isinstance(start_simulations, bool):
+        raise TypeError(f'Argument, start_simulations, must be a boolean.')
     if not isinstance(model_id, str) and model_id is not None:
-        raise TypeError(
-            f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
+        raise TypeError('The model id passed to the convervation voltage reduction application must be a string type '
+                        f'or {None}.')
+    global gapps, cim, platform_simulations, db_connection, cim_graph_models
+    gapps = None
+    cim = None
+    platform_simulations = {}
+    db_connection = None
+    cim_graph_models = {}
+    local_simulations = {}
+    app_instances = {'field_instances': {}, 'external_simulation_instances': {}, 'local_simulation_instances': {}}
     try:
-        gapps_main = GridAPPSD()
+        gapps = GridAPPSD()
     except Exception as e:
-        raise RuntimeError(
-            f'The conservation voltage reduction application failed to connect to the GridAPPSD platform!. Platform connection error: \n{e}'
-        )
+        raise RuntimeError('The conservation voltage reduction application failed to connect to the GridAPPSD '
+                           f'platform! Platform connection error: \n{e}')
+    try:
+        cim_profile = 'rc4_2021'
+        iec61970_301 = 7
+        cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
+        params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
+                                      cim_profile=cim_profile,
+                                      iec61970_301=iec61970_301)
+        db_connection = BlazegraphConnection(params)
+    except Exception as e:
+        raise RuntimeError('The conservation voltage reduction application failed to connect to the Blazegraph '
+                           f'database. error:\n{e}')
+    response = gapps.query_model_info()
+    models = response.get('data', {}).get('models', [])
+    model_is_valid = False
+    if model_id is not None:
+        for m in models:
+            m_id = m.get('modelId')
+            if model_id == m_id:
+                model_is_valid = True
+                break
+        if not model_is_valid:
+            raise ValueError(f'The model id provided does not exist in the GridAPPS-D plaform.')
+        else:
+            models = [m]
+    if start_simulations:
+        for m in models:
+            local_simulations[m.get('modelId', '')] = createSimulation(m)
+    else:
+        #TODO: query platform for running simulations which is currently not implemented in the GridAPPS-D Api
+        pass
+    # Create an cvr controller instance for all the real systems in the database
+    for m in models:
+        m_id = m.get('modelId')
+        app_instances['field_instances'][m_id] = ConservationVoltageReductionController(m_id)
+    for sim_id, m_id in platform_simulations.items():
+        app_instances['external_simulation_instances'][sim_id] = ConservationVoltageReductionController(m_id,
+                                                                                                        sim_id=sim_id)
+    for m_id, simulation in local_simulations.items():
+        app_instances['local_simulation_instances'][m_id] = \
+            ConservationVoltageReductionController(m_id, simulation=simulation)
+    app_instances_exist = False
+    if len(app_instances['field_instances']) > 0:
+        app_instances_exist = True
+    elif len(app_instances['external_simulation_instances']) > 0:
+        app_instances_exist = True
+    elif len(app_instances['local_simulation_instances']) > 0:
+        app_instances_exist = True
+    while app_instances_exist:
+        try:
+            app_instances_exist = False
+            if len(app_instances['field_instances']) > 0:
+                app_instances_exist = True
+            elif len(app_instances['external_simulation_instances']) > 0:
+                app_instances_exist = True
+            elif len(app_instances['local_simulation_instances']) > 0:
+                app_instances_exist = True
+        except KeyboardInterrupt:
+            break
 
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('model_id', narg='?', default=None, help='The mrid of the cim model to perform cvr on.')
+    parser.add_argument('model_id', nargs='?', default=None, help='The mrid of the cim model to perform cvr on.')
+    parser.add_argument('-s',
+                        '--start_simulations',
+                        action='store_true',
+                        help='Flag to have application start simulations')
+    parser.add_argument('-d',
+                        '--disable_control',
+                        action='store_true',
+                        help='Flag to disable control on startup by default.')
     args = parser.parse_args()
-    _main(args.model_id)
+    main(args.disable_control, args.start_simulations, args.model_id)
