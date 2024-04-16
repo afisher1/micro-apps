@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "conservation-voltage-reduction-app"
+version = "0.1.0"
+description = ""
+authors = ["afisher1 <4552674+afisher1@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gridappsd-python = "^2024"
+cim-graph = "^0.1"
+opendssdirect-py = "^0.9.4"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
