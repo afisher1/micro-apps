@@ -1,4 +1,5 @@
 import importlib
+import math
 from argparse import ArgumentParser
 from datetime import datetime
 from typing import Any, Dict
@@ -10,6 +11,7 @@ from cimgraph.databases.gridappsd.gridappsd import GridappsdConnection
 from cimgraph.models import FeederModel
 from gridappsd import GridAPPSD, topics
 from gridappsd.simulation import *
+from opendssdirect import dss
 
 CIM_PROFILE = 'rc4_2021'
 IEC61970_301 = 7
@@ -107,7 +109,9 @@ class ConservationVoltageReductionController(object):
         self.desired_setpoints = {}
         self.controllable_regulators = {}
         self.controllable_capacitors = {}
-        self.measurements = {}
+        self.pnv_measurements = {}
+        self.va_measurements = {}
+        self.pos_measurements = {}
         if period is None:
             self.period = ConservationVoltageReductionController.period
         else:
@@ -140,27 +144,51 @@ class ConservationVoltageReductionController(object):
                             transformerEnd.RatioTapChanger.highStep
                         self.controllable_regulators[mRID][f'min_tap_{transformerEnd.phases.value}'] = \
                             transformerEnd.RatioTapChanger.lowStep
-        # Store measurements of voltages, loads, pv, battery, capacitor status, and regulator taps.
+        # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         measurements = self.graph_model.graph.get(cim.Analog, {})
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
-        for mrid, meas in measurements.items():
+        for meas in measurements.values():
             if meas.measurementType == 'PNV':    #it's a voltage measurement. store it.
-                self.measurements[mrid] = {'measurement_object': meas, 'measurement_value': {}}
+                mrid = meas.mRID
+                self.pnv_measurements[mrid] = {'measurement_object': meas, 'measurement_value': None}
             elif meas.measurementType == 'VA':    #it's a power measurement.
                 if isinstance(meas.PowerSystemResource, (cim.EnergyConsumer, cim.PowerElectronicsConnection)):
-                    self.measurements[mrid] = {'measurement_object': meas, 'measurement_value': {}}
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.va_measurements.keys():
+                        self.va_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.va_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.va_measurements[mrid]['measurement_values'][meas.mRID] = None
             elif meas.measurementType == 'Pos':
-                self.measurements[mrid] = {'measurement_object': meas, 'measurement_value': {}}
+                if isinstance(meas.PowerSystemResource, (cim.Switch, cim.PowerTransformer, cim.LinearShuntCompensator)):
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.pos_measurements.keys():
+                        self.pos_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.pos_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.pos_measurements[mrid]['measurement_values'][meas.mRID] = None
         if self.simulation is not None:
             self.simulation.start_simulation()
+        self.dssContext = dss.NewContext()
+        self.create_opendss_context()
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
-        for mrid in self.measurements.keys():
+        for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
-                self.measurements[mrid]['measurement_value'] = meas
+                self.pnv_measurements[mrid]['measurement_value'] = meas
+        for psr_mrid in self.va_measurements.keys():
+            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
+                meas = measurements.get(mrid)
+                if meas is not None:
+                    self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
+        for psr_mrid in self.pos_measurements.keys():
+            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
+                meas = measurements.get(mrid)
+                if meas is not None:
+                    self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
         #TODO: call cvr algorithm
-        self.simulation.resume()
+        if self.simulation is not None:
+            # self.simulation.pause()
+            self.simulation.resume()
         #TODO: check for voltage violations and adjust cvr setpoints accordingly
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
@@ -180,12 +208,89 @@ class ConservationVoltageReductionController(object):
                 'p_fraction': '0.0'
             }
         }
-        base_dss_str = self.gad_obj.get_response(topics.CONFIG, message)
+        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message)
+        base_dss_str = base_dss_response.get('message', '')
         base_dss_str = base_dss_str.replace('{"data":', '')
         endOfBase = base_dss_str.find('calcv\n') + len('calcv\n')
-        fileDir = Path(__file__).parent / 'app_instances' / f'{self.id}' / 'master.dss'
+        fileDir = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}' / 'master.dss'
+        fileDir.parent.mkdir(parents=True, exist_ok=True)
         with fileDir.open(mode='w') as f_master:
             f_master.write(base_dss_str[:endOfBase])
+        self.dssContext.Command(f'Redirect {fileDir}')
+        self.dssContext.Command(f'Compile {fileDir}')
+        self.dssContext.Solution.SolveNoControl()
+
+    def update_opendss_with_measurements(self):
+        for psr_mrid in self.va_measurements.keys():
+            va_val = complex(0.0, 0.0)
+            val_is_valid = True
+            for meas_mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
+                meas_val = self.va_measurements[psr_mrid]['measurement_values'][meas_mrid]
+                if meas_val is not None:
+                    va_val += complex(
+                        meas_val.get('magnitude') * math.cos(math.radians(meas_val.get('angle'))),
+                        meas_val.get('magnitude') * math.sin(math.radians(meas_val.get('angle')))) / 1000.0
+                else:
+                    val_is_valid = False
+                    break
+            if val_is_valid:
+                meas_obj = self.va_measurements[psr_mrid]['measurement_objects'][meas_mrid].PowerSystemResource
+                name = meas_obj.name
+                if isinstance(meas_obj, cim.EnergyConsumer):
+                    self.dssContext.Command(f'Load.{name}.kw={va_val.real}')
+                    self.dssContext.Command(f'Load.{name}.kvar={va_val.imag}')
+                elif isinstance(meas_obj, cim.PowerElectronicsConnection):
+                    if isinstance(meas_obj.PowerElectronicsUnit, cim.PhotovoltaicUnit):
+                        self.dssContext.Command(f'PVSystem.{name}.pmpp={va_val.real}')
+                        self.dssContext.Command(f'PVSystem.{name}.kvar={va_val.imag}')
+                    elif isinstance(meas_obj.PowerElectronicsUnit, cim.BatteryUnit):
+                        self.dssContext.Command(f'Storage.{name}.kw={va_val.real}')
+                        self.dssContext.Command(f'Storage.{name}.kvar={va_val.imag}')
+                    #TODO: update wind turbines in opendss
+                #TODO: update other generator/motor type object in opendss
+        for psr_mrid in self.pos_measurements.keys():
+            num_of_meas = len(self.pos_measurements[psr_mrid]['measurement_objects'].keys())
+            pos_val = [0] * num_of_meas
+            val_is_valid = True
+            key_list = list(self.pos_measurements[psr_mrid]['measurement_values'].keys())
+            for meas_mrid in key_list:
+                meas_val = self.pos_measurements[psr_mrid]['measurement_values'][meas_mrid]
+                if meas_val is not None:
+                    pos_val[key_list.index(meas_mrid)] = meas_val.get('value')
+                else:
+                    val_is_valid = False
+                    break
+            if val_is_valid:
+                meas_obj = self.pos_measurements[psr_mrid]['measurement_objects'][meas_mrid].PowerSystemResource
+                name = meas_obj.name
+                if isinstance(meas_obj, cim.Switch):
+                    switch_state = sum(pos_val)
+                    if switch_state == 0:
+                        self.dssContext.Command(f'close Line.{name} 1')
+                    else:
+                        self.dssContext.Command(f'open Line.{name} 1')
+                elif isinstance(meas_obj, cim.LinearShuntCompensator):
+                    pass
+
+        for measDict in self.measurements.items():
+            measObj = measDict.get('measurement_object')
+            measVal = measDict.get('measurement_value')
+
+            if measObj.measurementType == 'Pos':
+                if isinstance(measObj.PowerSystemResource, cim.Switch):
+                    name = measObj.PowerSystemResource.name
+                    value = bool(measVal.get('value'))
+                    if value:
+                        self.dssContext.Command(f'open Line.{name} 1')
+                    else:
+                        self.dssContext.Command(f'close Line.{name} 1')
+                elif isinstance(measObj.PowerSystemResource, cim.LinearShuntCompensator):
+                    name = measObj.PowerSystemResource.name
+                    value = bool(measVal.get('value'))
+                    if value:
+                        self.dssContext.Command(f'open Line.{name} 1')
+                    else:
+                        self.dssContext.Command(f'close Line.{name} 1')
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
@@ -238,8 +343,8 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     sim_args = SimulationArgs(start_time=f'{start_time}',
                               duration=f'{24*3600}',
                               simulation_name=sim_name,
-                              run_realtime=True,
-                              pause_after_measurements=False)
+                              run_realtime=False,
+                              pause_after_measurements=True)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
