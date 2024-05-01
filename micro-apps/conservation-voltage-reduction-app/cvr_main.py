@@ -40,44 +40,44 @@ class ConservationVoltageReductionController(object):
                     read the model database to find all the measurements in the model as well as the controllable
                     regulators and capacitors in the sytem.
                 Arguments:
-                    headers: A dictionary containing header information on the message recieved from the GridAPPS-D
+                    headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
                         Type: dictionary.
                         Default: NA.
-                    message: A dictionary containing the message recieved from the GridAPPS-D platform.
+                    message: A dictionary containing the message received from the GridAPPS-D platform.
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
             enableControl(headers:Dict[Any], message:Dict[Any]): This callback function will tell the application that
                     it is allowed to perform cvr on the systems or simulations its tied to.
                 Arguments:
-                    headers: A dictionary containing header information on the message recieved from the GridAPPS-D
+                    headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
                         Type: dictionary.
                         Default: NA.
-                    message: A dictionary containing the message recieved from the GridAPPS-D platform.
+                    message: A dictionary containing the message received from the GridAPPS-D platform.
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
             disableControl(headers:Dict[Any], message:Dict[Any]): This callback function will prevent the application
                     from performing cvr on the systems or simulations its tied to.
                 Arguments:
-                    headers: A dictionary containing header information on the message recieved from the GridAPPS-D
+                    headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
                         Type: dictionary.
                         Default: NA.
-                    message: A dictionary containing the message recieved from the GridAPPS-D platform.
+                    message: A dictionary containing the message received from the GridAPPS-D platform.
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
             on_measurement(headers:Dict[Any], message:Dict[Any]): This callback function will be used to update the
                     applications measurements dictionary needed for cvr control.
                 Arguments:
-                    headers: A dictionary containing header information on the message recieved from the GridAPPS-D
+                    headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
                         Type: dictionary.
                         Default: NA.
-                    message: A dictionary containing the message recieved from the GridAPPS-D platform.
+                    message: A dictionary containing the message received from the GridAPPS-D platform.
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
@@ -110,6 +110,7 @@ class ConservationVoltageReductionController(object):
         self.controllable_regulators = {}
         self.controllable_capacitors = {}
         self.pnv_measurements = {}
+        self.pnv_measurements_pu = {}
         self.va_measurements = {}
         self.pos_measurements = {}
         if period is None:
@@ -190,6 +191,32 @@ class ConservationVoltageReductionController(object):
             # self.simulation.pause()
             self.simulation.resume()
         #TODO: check for voltage violations and adjust cvr setpoints accordingly
+
+    def calculate_per_unit_voltage(self):
+        for mrid in self.pnv_measurements.keys():
+            self.pnv_measurements_pu[mrid] = None
+            meas_base = None
+            meas = self.pnv_measurements.get(mrid)
+            if (meas is None) or (meas.get('measurement_value') is None):
+                print(f'Measurement not received yet for {mrid}. Retrying in {self.period}s.')
+                return
+            meas_value = meas.get('measurement_value').get('magnitude')
+            if meas_value is None:
+                print(f'The measurement value received from the platform for mrid {mrid} was corrupted.')
+                return
+            meas_obj = meas.get('measurement_object')
+            if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
+                print(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
+                return
+            meas_term = meas_obj.Terminal
+            if isinstance(meas_term, cim.Terminal):
+                if isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
+                    if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
+                        meas_base = meas_term.ConductingEquipment.BaseVoltage.nominalVoltage
+            if meas_base is None:
+                print(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
+                return
+            self.pnv_measurements_pu[mrid] = meas_value / meas_base
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -291,6 +318,9 @@ class ConservationVoltageReductionController(object):
                         self.dssContext.Command(f'open Line.{name} 1')
                     else:
                         self.dssContext.Command(f'close Line.{name} 1')
+
+    def cvr_control(self):
+        print()
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
