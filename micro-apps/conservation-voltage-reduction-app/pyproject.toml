@@ -7,10 +7,14 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-gridappsd-python = "^2024"
-cim-graph = "^0.1"
-opendssdirect-py = "^0.9.4"
+gridappsd-python = {version = "^2024", allow-prereleases = true}
+opendssdirect-py = "^0.9"
+cim-graph = "^0.1.5a0"
 
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^3.7.0"
+yapf = "^0.40.2"
+mypy = "^1.9.0"
 
 [build-system]
 requires = ["poetry-core"]
