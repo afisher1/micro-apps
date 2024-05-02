@@ -255,12 +255,6 @@ class ConservationVoltageReductionController(object):
                 return
             self.pnv_measurements_pu[mrid] = meas_value / meas_base
 
-    def on_measurement_callback(self, header: Dict[str, Any],
-                                message: Dict[str, Any]):
-        timestamp = message.get('message', {}).get('timestamp', '')
-        measurements = message.get('message', {}).get('measurements', {})
-        self.on_measurement(None, timestamp, measurements)
-
     def create_opendss_context(self):
         message = {
             'configurationType': 'DSS Base',
