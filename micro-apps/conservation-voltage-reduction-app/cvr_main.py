@@ -224,20 +224,20 @@ class ConservationVoltageReductionController(object):
             meas_base = None
             meas = self.pnv_measurements.get(mrid)
             if (meas is None) or (meas.get('measurement_value') is None):
-                print(
+                self.log.warn(
                     f'Measurement not received yet for {mrid}. Retrying in {self.period}s.'
                 )
                 return
             meas_value = meas.get('measurement_value').get('magnitude')
             if meas_value is None:
-                print(
+                self.log.error(
                     f'The measurement value received from the platform for mrid {mrid} was corrupted.'
                 )
                 return
             meas_obj = meas.get('measurement_object')
             if (meas_obj
                     is None) or (not isinstance(meas_obj, cim.Measurement)):
-                print(
+                self.log.error(
                     f'The measurement dictionary for mrid {mrid} is missing from the CIM database.'
                 )
                 return
@@ -248,8 +248,8 @@ class ConservationVoltageReductionController(object):
                     if isinstance(meas_term.ConductingEquipment.BaseVoltage,
                                   cim.BaseVoltage):
                         meas_base = meas_term.ConductingEquipment.BaseVoltage.nominalVoltage
-            if meas_base is None:
-                print(
+            if (meas_base is None) or (meas_base < 1e-10):
+                self.log.error(
                     f'Unable to get the nominal voltage for measurement with mrid {mrid}.'
                 )
                 return
