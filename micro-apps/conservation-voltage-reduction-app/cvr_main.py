@@ -82,11 +82,13 @@ class ConservationVoltageReductionController(object):
             cvr_control(): This is the main function for performing the cvr control.
     """
     period = 600
+    lower_voltage_limit_pu = 0.9
 
     def __init__(self,
                  gad_obj: GridAPPSD,
                  model_id: str,
                  period: int = None,
+                 low_volt_lim: float = None,
                  sim_id: str = None,
                  simulation: Simulation = None):
         if not isinstance(gad_obj, GridAPPSD):
@@ -115,6 +117,10 @@ class ConservationVoltageReductionController(object):
             self.period = ConservationVoltageReductionController.period
         else:
             self.period = period
+        if low_volt_lim is None:
+            self.low_volt_lim = ConservationVoltageReductionController.lower_voltage_limit_pu
+        else:
+            self.low_volt_lim = low_volt_lim
         self.measurements_topic = None
         self.simulation = None
         if simulation is not None:
