@@ -81,8 +81,9 @@ class ConservationVoltageReductionController(object):
                 Returns: NA.
             cvr_control(): This is the main function for performing the cvr control.
     """
-    period = 600
+    period = 3600
     lower_voltage_limit_pu = 0.9
+    max_violation_time = 300
 
     def __init__(self,
                  gad_obj: GridAPPSD,
@@ -99,6 +100,8 @@ class ConservationVoltageReductionController(object):
             raise ValueError(f'model_id must be a valid uuid.')
         if not isinstance(period, int) and period is not None:
             raise TypeError(f'period must be an int type or {None}!')
+        if not isinstance(low_volt_lim, float) and period is not None:
+            raise TypeError(f'low_volt_lim must be an float type or {None}!')
         if not isinstance(sim_id, str) and sim_id is not None:
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
@@ -151,17 +154,17 @@ class ConservationVoltageReductionController(object):
         measurements = self.graph_model.graph.get(cim.Analog, {})
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
         for meas in measurements.values():
-            if meas.measurementType == 'PNV':    #it's a voltage measurement. store it.
+            if meas.measurementType == 'PNV':    # it's a voltage measurement. store it.
                 mrid = meas.mRID
                 self.pnv_measurements[mrid] = {'measurement_object': meas, 'measurement_value': None}
-            elif meas.measurementType == 'VA':    #it's a power measurement.
+            elif meas.measurementType == 'VA':    # it's a power measurement.
                 if isinstance(meas.PowerSystemResource, (cim.EnergyConsumer, cim.PowerElectronicsConnection)):
                     mrid = meas.PowerSystemResource.mRID
                     if mrid not in self.va_measurements.keys():
                         self.va_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
                     self.va_measurements[mrid]['measurement_objects'][meas.mRID] = meas
                     self.va_measurements[mrid]['measurement_values'][meas.mRID] = None
-            elif meas.measurementType == 'Pos':
+            elif meas.measurementType == 'Pos':    # it's a positional measurement.
                 if isinstance(meas.PowerSystemResource, (cim.Switch, cim.PowerTransformer, cim.LinearShuntCompensator)):
                     mrid = meas.PowerSystemResource.mRID
                     if mrid not in self.pos_measurements.keys():
@@ -172,6 +175,9 @@ class ConservationVoltageReductionController(object):
             self.simulation.start_simulation()
         self.dssContext = dss.NewContext()
         self.create_opendss_context()
+        self.next_control_time = 0
+        self.voltage_violation_time = -1
+        self.isValid = True
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         if not isinstance(sim, Simulation):
@@ -190,11 +196,27 @@ class ConservationVoltageReductionController(object):
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
-        #TODO: call cvr algorithm
+        self.calculate_per_unit_voltage()
+        self.update_opendss_with_measurements()
+        if int(timestamp) > self.next_control_time:
+            self.cvr_control()
+            self.next_control_time = int(timestamp) + self.period
+            self.voltage_violation_time = -1
+        else:
+            total_violation_time = 0
+            for val in self.pnv_measurements_pu.values():
+                if val is not None:
+                    if val < self.low_volt_lim:
+                        if self.voltage_violation_time < 0:
+                            self.voltage_violation_time = int(timestamp)
+                        else:
+                            total_violation_time = int(timestamp) - self.voltage_violation_time
+                        break
+            if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                self.cvr_control()
+                self.voltage_violation_time = int(timestamp)
         if self.simulation is not None:
-            # self.simulation.pause()
             self.simulation.resume()
-        #TODO: check for voltage violations and adjust cvr setpoints accordingly
 
     def calculate_per_unit_voltage(self):
         for mrid in self.pnv_measurements.keys():
@@ -319,13 +341,22 @@ class ConservationVoltageReductionController(object):
         print()
 
     def send_setpoint(self, cimObject: object, setpoint: int):
-        if not isinstance(cimObject, (cim.TapChanger, cim.LinearShuntCompensator)):
-            raise TypeError('cimObject must be an instance of cim.TapChanger or cim.LinearShuntCompensator. cimObject '
-                            f'provided was of type {type(cimObject)}.')
+        if not isinstance(cimObject, (cim.PowerTransformer, cim.LinearShuntCompensator)):
+            raise TypeError('cimObject must be an instance of cim.PowerTransformer or cim.LinearShuntCompensator. '
+                            f'cimObject provided was of type {type(cimObject)}.')
         if not isinstance(setpoint, int):
             raise TypeError(f'setpoint is expected to be an int. Provided type was {type(setpoint)}')
-        if isinstance(cimObject, cim.TapChanger):
+        if isinstance(cimObject, cim.PowerTransformer):
             pass
+
+    def simulation_completed(self, sim: Simulation):
+        self.log.info(f'Simulation for ConservationVoltageReductionController:{self.id} has finished. This application '
+                      'instance can be deleted.')
+        self.isValid = False
+
+    def __del__(self):
+        directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
+        removeDirectory(directoryToDelete)
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
@@ -375,11 +406,13 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
     start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
-    sim_args = SimulationArgs(start_time=f'{start_time}',
-                              duration=f'{24*3600}',
-                              simulation_name=sim_name,
-                              run_realtime=False,
-                              pause_after_measurements=True)
+    sim_args = SimulationArgs(
+        start_time=f'{start_time}',
+    #   duration=f'{24*3600}',
+        duration=120,
+        simulation_name=sim_name,
+        run_realtime=False,
+        pause_after_measurements=True)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -396,6 +429,17 @@ def createGadObject() -> GridAPPSD:
     if gad_password is None:
         os.putenv('GRIDAPPSD_APPLICATION_ID', 'ConservationVoltageReductionApplication')
     return GridAPPSD()
+
+
+def removeDirectory(directory: Path | str):
+    if isinstance(directory, str):
+        directory = Path(directory)
+    for item in directory.iterdir():
+        if item.is_dir():
+            removeDirectory(item)
+        else:
+            item.unlink()
+    directory.rmdir()
 
 
 def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
@@ -459,18 +503,35 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         gad_log.info('ConservationVoltageReductionApplication successfully started.')
         gad_object.set_application_status(ProcessStatusEnum.RUNNING)
 
-    while gad_object.connected():
+    while gad_object.connected:
         try:
             app_instances_exist = False
+            #TODO: check platform for any running external simulations to control.
+            invalidInstances = []
+            for m_id, app in app_instances.get('field_instances', {}).items():
+                if not app.isValid:
+                    invalidInstances.append(m_id)
+            for m_id in invalidInstances:
+                del app_instances['field_instances'][m_id]
+            invalidInstances = []
+            for sim_id, app in app_instances.get('external_simulation_instances', {}).items():
+                #TODO: check if external simulation has finished and shutdown the corresponding app instance.
+                if not app.isValid:
+                    invalidInstances.append(sim_id)
+            for sim_id in invalidInstances:
+                del app_instances['external_simulation_instances'][sim_id]
+            invalidInstances = []
+            for m_id, app in app_instances.get('local_simulation_instances', {}).items():
+                if not app.isValid:
+                    invalidInstances.append(m_id)
+            for m_id in invalidInstances:
+                del app_instances['local_simulation_instances'][m_id]
             if len(app_instances['field_instances']) > 0:
                 app_instances_exist = True
                 application_uptime = int(time.time())
             if len(app_instances['external_simulation_instances']) > 0:
                 app_instances_exist = True
                 application_uptime = int(time.time())
-            else:
-                #TODO: query platform for running simulations which is currently not implemented in the GridAPPS-D Api
-                pass
             if len(app_instances['local_simulation_instances']) > 0:
                 app_instances_exist = True
                 application_uptime = int(time.time())
@@ -484,6 +545,15 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         except KeyboardInterrupt:
             gad_log.info('Manually exiting ConservationVoltageReductionApplication')
             gad_object.set_application_status(ProcessStatusEnum.STOPPING)
+            appList = list(app_instances.get('field_instances', {}))
+            for app_mrid in appList:
+                del app_instances['field_instances'][app_mrid]
+            appList = list(app_instances.get('external_simulation_instances', {}))
+            for app_mrid in appList:
+                del app_instances['external_simulation_instances'][app_mrid]
+            appList = list(app_instances.get('local_simulation_instances', {}))
+            for app_mrid in appList:
+                del app_instances['local_simulation_instances'][app_mrid]
             gad_object.disconnect()
 
 
