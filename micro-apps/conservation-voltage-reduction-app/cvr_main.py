@@ -318,6 +318,28 @@ class ConservationVoltageReductionController(object):
     def cvr_control(self):
         print()
 
+    def increase_voltage_capacitor(self, cap_list: list) -> dict:
+        return_dict = {}
+        success = False
+        while cap_list and not success:
+            element_tuple = cap_list.pop(0)
+            if not element_tuple[3]:
+                continue
+            cap_mrid = element_tuple[0]
+            cap_obj = element_tuple[1]
+            pos_val = [1] * len(self.pos_measurements[cap_mrid]['measurement_values'].keys())
+            saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
+            self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
+            self.dssContext.Solution.SolveNoControl()
+            converged = self.dssContext.Solution.Converged()
+            if converged:
+                return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
+                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                    success = True
+            else:
+                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+        return return_dict
+
     def decrease_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
         while cap_list:
