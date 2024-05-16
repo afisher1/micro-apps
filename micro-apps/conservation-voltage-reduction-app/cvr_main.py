@@ -391,7 +391,7 @@ class ConservationVoltageReductionController(object):
                     pos = pos_list[0]
             if pos is not None:
                 # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
-                capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos, True))
+                capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos['value'], True))
         if capacitor_list:
             meas_list = []
             # FIXMEOr: Is this going to pnv_measurements_pu too many times?
@@ -403,14 +403,14 @@ class ConservationVoltageReductionController(object):
                     sorted(capacitor_list, key=lambda x: x[2], reverse=True)
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
-                        if element_tuple[2] == 1:
+                        if element_tuple[3] == 1:
                             local_capacitor_list.append(element_tuple)
                     commands_dict = self.decrease_voltage_capacitor(local_capacitor_list)
                 else:
                     sorted(capacitor_list, key=lambda x: x[2])
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
-                        if element_tuple[2] == 0:
+                        if element_tuple[3] == 0:
                             local_capacitor_list.append(element_tuple)
                     commands_dict = self.increase_voltage_capacitor(local_capacitor_list)
 
@@ -422,7 +422,7 @@ class ConservationVoltageReductionController(object):
         success = False
         while cap_list and not success:
             element_tuple = cap_list.pop(0)
-            if not element_tuple[3]:
+            if not element_tuple[4]:
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
