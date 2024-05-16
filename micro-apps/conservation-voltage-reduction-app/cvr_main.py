@@ -380,7 +380,42 @@ class ConservationVoltageReductionController(object):
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
 
     def cvr_control(self):
-        pass
+        capacitor_list = []
+        for cap_mrid, cap in self.controllable_capacitors.items():
+            cap_meas_dict = self.pos_measurements.get(cap_mrid)
+            pos = None
+            if cap_meas_dict is not None:
+                cap_meas_val_dict = cap_meas_dict.get('measurement_values')
+                pos_list = list(cap_meas_val_dict.values())
+                if pos_list:
+                    pos = pos_list[0]
+            if pos is not None:
+                # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
+                capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos, True))
+        if capacitor_list:
+            meas_list = []
+            # FIXMEOr: Is this going to pnv_measurements_pu too many times?
+            for meas_mrid in self.pnv_measurements_pu.keys():
+                if self.pnv_measurements_pu[meas_mrid] is not None:
+                    meas_list.append(self.pnv_measurements_pu[meas_mrid])
+            if meas_list:
+                if min(meas_list) > self.low_volt_lim:
+                    sorted(capacitor_list, key=lambda x: x[2], reverse=True)
+                    local_capacitor_list = []
+                    for element_tuple in capacitor_list:
+                        if element_tuple[2] == 1:
+                            local_capacitor_list.append(element_tuple)
+                    commands_dict = self.decrease_voltage_capacitor(local_capacitor_list)
+                else:
+                    sorted(capacitor_list, key=lambda x: x[2])
+                    local_capacitor_list = []
+                    for element_tuple in capacitor_list:
+                        if element_tuple[2] == 0:
+                            local_capacitor_list.append(element_tuple)
+                    commands_dict = self.increase_voltage_capacitor(local_capacitor_list)
+
+        for mrid in commands_dict.keys():
+            self.send_setpoint(commands_dict[mrid]['object'], commands_dict[mrid]['setpoint'])
 
     def increase_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
