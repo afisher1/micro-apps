@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import cimgraph.utils as cimUtils
 from cimgraph.databases import ConnectionParameters
+from cimgraph.databases.blazegraph.blazegraph import BlazegraphConnection
 from cimgraph.databases.gridappsd.gridappsd import GridappsdConnection
 from cimgraph.models import FeederModel
 from gridappsd import GridAPPSD, topics
@@ -140,19 +141,30 @@ class ConservationVoltageReductionController(object):
         self.graph_model = buildGraphModel(model_id)
         # Store controllable_capacitors
         self.controllable_capacitors = self.graph_model.graph.get(cim.LinearShuntCompensator, {})
+        # print(self.controllable_capacitors.keys())
         # Store controllable_regulators
         powerTransformers = self.graph_model.graph.get(cim.PowerTransformer, {})
+        ratioTapChangers = self.graph_model.graph.get(cim.RatioTapChanger, {})
+        # print(powerTransformers.keys())
+        # print(ratioTapChangers.keys())
         for mRID, powerTransformer in powerTransformers.items():
             for transformerTank in powerTransformer.TransformerTanks:
                 for transformerEnd in transformerTank.TransformerTankEnds:
-                    if transformerEnd.RatioTapChanger is not None and transformerEnd.Terminal.sequenceNumber == 1:
+                    if transformerEnd.RatioTapChanger is not None:
                         if mRID not in self.controllable_regulators.keys():
                             self.controllable_regulators[mRID] = {}
-                        self.controllable_regulators[mRID]['name'] = f'reg_{powerTransformer.name}'
-                        self.controllable_regulators[mRID][f'ratioTapChanger'] = transformerEnd.RatioTapChanger
+                            self.controllable_regulators[mRID]['RatioTapChangers'] = []
+                            self.controllable_regulators[mRID]['PhasesToName'] = {}
+                        self.controllable_regulators[mRID]['regulator_name'] = powerTransformer.name
+                        self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
+                        self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
+                            transformerEnd.RatioTapChanger.name
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
+        # print(self.controllable_regulators.keys())
         measurements = self.graph_model.graph.get(cim.Analog, {})
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
+
+        # print(measurements.keys())
         for meas in measurements.values():
             if meas.measurementType == 'PNV':    # it's a voltage measurement. store it.
                 mrid = meas.mRID
@@ -171,6 +183,8 @@ class ConservationVoltageReductionController(object):
                         self.pos_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
                     self.pos_measurements[mrid]['measurement_objects'][meas.mRID] = meas
                     self.pos_measurements[mrid]['measurement_values'][meas.mRID] = None
+        # for r in self.controllable_regulators.values():
+        #     print(json.dumps(r['PhasesToName'], indent=4, sort_keys=True))
         if self.simulation is not None:
             self.simulation.start_simulation()
         self.dssContext = dss.NewContext()
@@ -224,25 +238,46 @@ class ConservationVoltageReductionController(object):
             meas_base = None
             meas = self.pnv_measurements.get(mrid)
             if (meas is None) or (meas.get('measurement_value') is None):
-                self.log.warn(f'Measurement not received yet for {mrid}. Retrying in {self.period}s.')
-                return
+                self.log.warning(f'Measurement {mrid} is missing. It will be ignored in cvr control.')
+                continue
             meas_value = meas.get('measurement_value').get('magnitude')
             if meas_value is None:
-                self.log.error(f'The measurement value received from the platform for mrid {mrid} was corrupted.')
-                return
+                self.log.error(f'An unexpected value of None was recieved for PNV measurement {mrid}. It will be '
+                               'ignored in cvr control.')
+                continue
             meas_obj = meas.get('measurement_object')
             if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
-                self.log.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
-                return
-            meas_term = meas_obj.Terminal
-            if isinstance(meas_term, cim.Terminal):
-                if isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
-                    if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
-                        meas_base = meas_term.ConductingEquipment.BaseVoltage.nominalVoltage
+                self.log.error(f'The cim.Measurement object {mrid} associated with this measurement value is missing! '
+                               'It will be ignored in cvr control.')
+                print(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
+                continue
+            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
+                meas_base = float(meas_obj.PowerSystemResource.ratedU)
+            else:
+                meas_term = meas_obj.Terminal
+                if isinstance(meas_term, cim.Terminal):
+                    if meas_term.TransformerEnd:
+                        if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
+                            meas_base = float(meas_term.TransformerEnd[0].ratedU)
+                        elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
+                            if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
+                                meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
+                            else:
+                                self.log.error(f'meas_term.TransformerEnd[0].BaseVoltage is None')
+                    elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
+                        if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
+                            meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
+                        else:
+                            print(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                    else:
+                        print(f'meas_term.ConductingEquipment is None')
+            print(f'base voltage is {meas_base}V')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
-                return
-            self.pnv_measurements_pu[mrid] = meas_value / meas_base
+                print('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                      f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
+                continue
+            self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -316,6 +351,7 @@ class ConservationVoltageReductionController(object):
                     break
             if val_is_valid:
                 meas_obj = self.pos_measurements[psr_mrid]['measurement_objects'][meas_mrid].PowerSystemResource
+                meas_phase = self.pos_measurements[psr_mrid]['measurement_objects'][meas_mrid].phases.value
                 name = meas_obj.name
                 if isinstance(meas_obj, cim.Switch):
                     switch_state = sum(pos_val)
@@ -326,19 +362,25 @@ class ConservationVoltageReductionController(object):
                 elif isinstance(meas_obj, cim.LinearShuntCompensator):
                     self.dssContext.Command(f'Capacitor.{name}.states={pos_val}')
                 if isinstance(meas_obj, cim.PowerTransformer):
-                    reg = self.dssContext.Transformers.First()
-                    while reg:
-                        if self.dssContext.Transformers.Name() == name:
-                            break
+                    name = self.controllable_regulators.get(psr_mrid, {}).get('PhasesToName', {}).get(meas_phase)
+                    if name is not None:
+                        reg = self.dssContext.Transformers.First()
+                        while reg:
+                            if self.dssContext.Transformers.Name() == name:
+                                break
+                            else:
+                                reg = self.dssContext.Transformers.Next()
+                        if not reg:
+                            self.log.error(f'There is not regulator with the name {name} in the OpenDSS model!')
                         else:
-                            reg = self.dssContext.Transformers.Next()
-                    regulationPerStep = (self.dssContext.Transformers.MaxTap() - self.dssContext.Transformers.MinTap()
-                                         ) / self.dssContext.Transformers.NumTaps()
-                    tapStep = 1.0 + (pos_val[0] * regulationPerStep)
-                    self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
+                            regulationPerStep = (self.dssContext.Transformers.MaxTap()
+                                                 - self.dssContext.Transformers.MinTap()) \
+                                                 / self.dssContext.Transformers.NumTaps()
+                            tapStep = 1.0 + (pos_val[0] * regulationPerStep)
+                            self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
 
     def cvr_control(self):
-        print()
+        pass
 
     def send_setpoint(self, cimObject: object, setpoint: int):
         if not isinstance(cimObject, (cim.PowerTransformer, cim.LinearShuntCompensator)):
@@ -360,27 +402,39 @@ class ConservationVoltageReductionController(object):
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
+    global CIM_GRAPH_MODELS
     if not isinstance(mrid, str):
         raise TypeError(f'The mrid passed to the convervation voltage reduction application must be a string.')
     if mrid not in CIM_GRAPH_MODELS.keys():
         feeder_container = cim.Feeder(mRID=mrid)
         graph_model = FeederModel(connection=DB_CONNECTION, container=feeder_container, distributed=False)
-        graph_model.get_all_edges(cim.PowerTransformer)
-        graph_model.get_all_edges(cim.TransformerTank)
-        graph_model.get_all_edges(cim.Asset)
-        graph_model.get_all_edges(cim.LinearShuntCompensator)
-        graph_model.get_all_edges(cim.PowerTransformerEnd)
-        graph_model.get_all_edges(cim.TransformerEnd)
-        graph_model.get_all_edges(cim.TransformerMeshImpedance)
-        graph_model.get_all_edges(cim.TransformerTankEnd)
-        graph_model.get_all_edges(cim.TransformerTankInfo)
-        graph_model.get_all_edges(cim.LinearShuntCompensatorPhase)
-        graph_model.get_all_edges(cim.Terminal)
-        graph_model.get_all_edges(cim.ConnectivityNode)
-        graph_model.get_all_edges(cim.BaseVoltage)
-        graph_model.get_all_edges(cim.TransformerEndInfo)
-        graph_model.get_all_edges(cim.Analog)
-        graph_model.get_all_edges(cim.Discrete)
+        # graph_model.get_all_edges(cim.PowerTransformer)
+        # graph_model.get_all_edges(cim.TransformerTank)
+        # graph_model.get_all_edges(cim.Asset)
+        # graph_model.get_all_edges(cim.LinearShuntCompensator)
+        # graph_model.get_all_edges(cim.PowerTransformerEnd)
+        # graph_model.get_all_edges(cim.TransformerEnd)
+        # graph_model.get_all_edges(cim.TransformerMeshImpedance)
+        # graph_model.get_all_edges(cim.TransformerTankEnd)
+        # graph_model.get_all_edges(cim.TransformerTankInfo)
+        # graph_model.get_all_edges(cim.RatioTapChanger)
+        # graph_model.get_all_edges(cim.TapChanger)
+        # graph_model.get_all_edges(cim.TapChangerControl)
+        # graph_model.get_all_edges(cim.TapChangerInfo)
+        # graph_model.get_all_edges(cim.LinearShuntCompensatorPhase)
+        # graph_model.get_all_edges(cim.Terminal)
+        # graph_model.get_all_edges(cim.ConnectivityNode)
+        # graph_model.get_all_edges(cim.BaseVoltage)
+        # graph_model.get_all_edges(cim.EnergySource)
+        # graph_model.get_all_edges(cim.EnergyConsumer)
+        # graph_model.get_all_edges(cim.ConformLoad)
+        # graph_model.get_all_edges(cim.NonConformLoad)
+        # graph_model.get_all_edges(cim.EnergyConsumerPhase)
+        # graph_model.get_all_edges(cim.LoadResponseCharacteristic)
+        # graph_model.get_all_edges(cim.PowerCutZone)
+        # graph_model.get_all_edges(cim.Analog)
+        # graph_model.get_all_edges(cim.Discrete)
+        cimUtils.get_all_data(graph_model)
         CIM_GRAPH_MODELS[mrid] = graph_model
     return CIM_GRAPH_MODELS[mrid]
 
@@ -412,7 +466,7 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
         duration=120,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=True)
+        pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -421,13 +475,13 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
 def createGadObject() -> GridAPPSD:
     gad_user = os.environ.get('GRIDAPPSD_USER')
     if gad_user is None:
-        os.putenv('GRIDAPPSD_USER', 'system')
+        os.environ['GRIDAPPSD_USER'] = 'system'
     gad_password = os.environ.get('GRIDAPPSD_PASSWORD')
     if gad_password is None:
-        os.putenv('GRIDAPPSD_PASSWORD', 'manager')
+        os.environ['GRIDAPPSD_PASSWORD'] = 'manager'
     gad_app_id = os.environ.get('GRIDAPPSD_APPLICATION_ID')
-    if gad_password is None:
-        os.putenv('GRIDAPPSD_APPLICATION_ID', 'ConservationVoltageReductionApplication')
+    if gad_app_id is None:
+        os.environ['GRIDAPPSD_APPLICATION_ID'] = 'ConservationVoltageReductionApplication'
     return GridAPPSD()
 
 
@@ -454,8 +508,12 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     cim_profile = 'rc4_2021'
     iec61970_301 = 7
     cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
-    params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
-    DB_CONNECTION = GridappsdConnection(params)
+    # params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
+    # DB_CONNECTION = GridappsdConnection(params)
+    params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
+                                  cim_profile=cim_profile,
+                                  iec61970_301=iec61970_301)
+    DB_CONNECTION = BlazegraphConnection(params)
     gad_object = createGadObject()
     gad_log = gad_object.get_logger()
     platform_simulations = {}
