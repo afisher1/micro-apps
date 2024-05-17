@@ -447,18 +447,33 @@ class ConservationVoltageReductionController(object):
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
-            pos_val = [0] * len(self.pos_measurements[cap_mrid]['measurement_values'].keys())
-            saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
+            pos_val = [0]
+            # saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
+            cap = self.dssContext.Capacitors.First()
+            while cap:
+                if cap_obj.name == self.dssContext.Capacitors.Name():
+                    break
+                else:
+                    cap = self.dssContext.Capacitors.Next()
+            if cap:
+                saved_states = self.dssContext.Capacitors.States()
+                print(f'saved states:{saved_states}')
+            else:
+                saved_states = [1]
             self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
             self.dssContext.Solution.SolveNoControl()
             converged = self.dssContext.Solution.Converged()
             success = False
             if converged:
+                print(f'Powerflow converged when opening cap {cap_mrid}.')
                 if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                    print(f'Opening cap {cap_mrid} caused no voltage violations.')
                     return_dict[cap_mrid] = {'setpoint': 0, 'object': cap_obj}
                     success = True
             if not success:
+                print(f'Opening cap {cap_mrid} caused voltage violations or powerflow did not converge.')
                 self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+        print(f'return_dict length: {len(return_dict)}')
         return return_dict
 
     def send_setpoint(self, cimObject: object, setpoint: int):
