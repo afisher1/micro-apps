@@ -437,13 +437,26 @@ class ConservationVoltageReductionController(object):
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
             pos_val = [1]
-            saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
+            #saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
+            cap = self.dssContext.Capacitors.First()
+            while cap:
+                if cap_obj.name == self.dssContext.Capacitors.Name():
+                    break
+                else:
+                    cap = self.dssContext.Capacitors.Next()
+            if cap:
+                saved_states = self.dssContext.Capacitors.States()
+                print(f'saved states:{saved_states}')
+            else:
+                saved_states = [0]
             self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
             self.dssContext.Solution.SolveNoControl()
             converged = self.dssContext.Solution.Converged()
             if converged:
+                print(f'Powerflow converged when closing cap {cap_mrid}.')
                 return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
                 if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                    print(f'Voltage violations were eliminated when closing cap {cap_mrid}.')
                     success = True
             else:
                 self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
