@@ -436,7 +436,7 @@ class ConservationVoltageReductionController(object):
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
-            pos_val = [1] * len(self.pos_measurements[cap_mrid]['measurement_values'].keys())
+            pos_val = [1]
             saved_states = self.dssContext.Command(f'Capacitor.{cap_obj.name}.states')
             self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
             self.dssContext.Solution.SolveNoControl()
@@ -453,7 +453,7 @@ class ConservationVoltageReductionController(object):
         return_dict = {}
         while cap_list:
             element_tuple = cap_list.pop(0)
-            if not element_tuple[3]:
+            if not element_tuple[4]:
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
