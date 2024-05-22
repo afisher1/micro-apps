@@ -11,7 +11,7 @@ from cimgraph.databases import ConnectionParameters
 from cimgraph.databases.blazegraph.blazegraph import BlazegraphConnection
 from cimgraph.databases.gridappsd.gridappsd import GridappsdConnection
 from cimgraph.models import FeederModel
-from gridappsd import GridAPPSD, topics
+from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
@@ -109,7 +109,6 @@ class ConservationVoltageReductionController(object):
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
         self.id = uuid4()
         self.platform_measurements = {}
-        self.last_setpoints = {}
         self.desired_setpoints = {}
         self.controllable_regulators = {}
         self.controllable_capacitors = {}
@@ -126,17 +125,27 @@ class ConservationVoltageReductionController(object):
         else:
             self.low_volt_lim = low_volt_lim
         self.measurements_topic = None
+        self.setpoints_topic = None
         self.simulation = None
+        self.simulation_id = None    #TODO: figure out what simulation_id should be when deployed in the field.
         if simulation is not None:
             self.simulation = simulation
+            self.simulation_id = simulation.simulation_id
             self.simulation.add_onmeasurement_callback(self.on_measurement)
         if sim_id is None:
-            measurements_topic = topics.field_output_topic(None, sim_id)
+            self.measurements_topic = topics.field_output_topic(None, sim_id)
         else:
-            measurements_topic = topics.simulation_output_topic(sim_id)
+            self.simulation_id = sim_id
+            self.measurements_topic = topics.simulation_output_topic(sim_id)
+        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.gad_obj = gad_obj
         self.log = self.gad_obj.get_logger()
-        self.gad_obj.subscribe(measurements_topic, self.on_measurement_callback)
+        if self.measurements_topic:
+            self.gad_obj.subscribe(self.measurements_topic, self.on_measurement_callback)
+        if self.simulation_id:
+            self.setpoints_topic = topics.simulation_input_topic(self.simulation_id)
+        else:
+            self.setpoints_topic = topics.field_input_topic()
         # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
         self.graph_model = buildGraphModel(model_id)
         # Store controllable_capacitors
@@ -194,6 +203,7 @@ class ConservationVoltageReductionController(object):
         self.isValid = True
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
+        self.desired_setpoints.clear()
         if not isinstance(sim, Simulation):
             self.log.error('')
         for mrid in self.pnv_measurements.keys():
@@ -405,17 +415,17 @@ class ConservationVoltageReductionController(object):
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 1:
                             local_capacitor_list.append(element_tuple)
-                    commands_dict = self.decrease_voltage_capacitor(local_capacitor_list)
+                    self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
                 else:
                     sorted(capacitor_list, key=lambda x: x[2])
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 0:
                             local_capacitor_list.append(element_tuple)
-                    commands_dict = self.increase_voltage_capacitor(local_capacitor_list)
+                    self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
 
-        for mrid in commands_dict.keys():
-            self.send_setpoint(commands_dict[mrid]['object'], commands_dict[mrid]['setpoint'])
+        if self.desired_setpoints:
+            self.send_setpoint()
 
     def increase_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
@@ -476,14 +486,36 @@ class ConservationVoltageReductionController(object):
         print(f'return_dict length: {len(return_dict)}')
         return return_dict
 
-    def send_setpoint(self, cimObject: object, setpoint: int):
-        if not isinstance(cimObject, (cim.PowerTransformer, cim.LinearShuntCompensator)):
-            raise TypeError('cimObject must be an instance of cim.PowerTransformer or cim.LinearShuntCompensator. '
-                            f'cimObject provided was of type {type(cimObject)}.')
-        if not isinstance(setpoint, int):
-            raise TypeError(f'setpoint is expected to be an int. Provided type was {type(setpoint)}')
-        if isinstance(cimObject, cim.PowerTransformer):
-            pass
+    def send_setpoint(self):
+        self.differenceBuilder.clear()
+        for mrid, dictVal in self.desired_setpoints.items():
+            cimObj = dictVal.get('object')
+            newSetpoint = dictVal.get('setpoint')
+            oldSetpoint = dictVal.get('old_setpoint')
+            if isinstance(cimObj, cim.LinearShuntCompensator):
+                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
+                                                      int(not newSetpoint[0]))
+            elif isinstance(cimObj, cim.PowerTransformer):
+                tapChangersList = self.controllable_regulators.get(mrid, {}).get('RatioTapChangers', [])
+                currentTapPositions = self.pos_measurements.get(mrid, {})
+                for rtp in tapChangersList:
+                    phases = rtp.TransformerEnd.phases
+                    for measurement_object in currentTapPositions.get('measurement_objects', {}).values():
+                        if measurement_object.phases == phases:
+                            currentSetpoint = currentTapPositions.get('measurement_values',
+                                                                      {}).get(measurement_object.mRID, {}).get('value')
+                            if not currentSetpoint:
+                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, 'NA')
+                            else:
+                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint,
+                                                                      currentSetpoint)
+                            break
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
+                                 f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
+                                 'sending a setpoint to this object.')
+        setpointMessage = self.differenceBuilder.get_message()
+        self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
         self.log.info(f'Simulation for ConservationVoltageReductionController:{self.id} has finished. This application '
