@@ -425,7 +425,7 @@ class ConservationVoltageReductionController(object):
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
 
         if self.desired_setpoints:
-            self.send_setpoint()
+            self.send_setpoints()
 
     def increase_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
@@ -486,7 +486,7 @@ class ConservationVoltageReductionController(object):
         print(f'return_dict length: {len(return_dict)}')
         return return_dict
 
-    def send_setpoint(self):
+    def send_setpoints(self):
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
             cimObj = dictVal.get('object')
