@@ -432,7 +432,7 @@ class ConservationVoltageReductionController(object):
         success = False
         while cap_list and not success:
             element_tuple = cap_list.pop(0)
-            if not element_tuple[4]:
+            if element_tuple[3] == 1:
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
@@ -466,7 +466,7 @@ class ConservationVoltageReductionController(object):
         return_dict = {}
         while cap_list:
             element_tuple = cap_list.pop(0)
-            if not element_tuple[4]:
+            if not element_tuple[3]:
                 continue
             cap_mrid = element_tuple[0]
             cap_obj = element_tuple[1]
