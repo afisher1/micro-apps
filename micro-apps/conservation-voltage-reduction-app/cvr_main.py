@@ -402,30 +402,47 @@ class ConservationVoltageReductionController(object):
             if pos is not None:
                 # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
                 capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos['value'], True))
-        if capacitor_list:
-            meas_list = []
-            # FIXMEOr: Is this going to pnv_measurements_pu too many times?
-            for meas_mrid in self.pnv_measurements_pu.keys():
-                if self.pnv_measurements_pu[meas_mrid] is not None:
-                    meas_list.append(self.pnv_measurements_pu[meas_mrid])
-            if meas_list:
-                if min(meas_list) > self.low_volt_lim:
+        regulator_list = []
+        for reg_mrid, reg in self.controllable_regulators.items():
+            reg_meas_dict = self.pos_measurements.get(reg_mrid)
+            tapStep = None
+            if reg_meas_dict is not None:
+                print()
+        if not (capacitor_list or regulator_list):
+            return
+        meas_list = []
+        # FIXMEOr: Is this going to pnv_measurements_pu too many times?
+        for meas_mrid in self.pnv_measurements_pu.keys():
+            if self.pnv_measurements_pu[meas_mrid] is not None:
+                meas_list.append(self.pnv_measurements_pu[meas_mrid])
+        if meas_list:
+            if min(meas_list) > self.low_volt_lim:
+                if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2], reverse=True)
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 1:
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
-                else:
+                if regulator_list:
+                    print()
+            else:
+                if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 0:
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
+                if regulator_list:
+                    print()
+
+        # FIXMEOr: Check the update_opendss_with_measurements function.
 
         if self.desired_setpoints:
             self.send_setpoints()
+
+        return
 
     def increase_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
