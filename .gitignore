@@ -5,6 +5,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+micro-apps/conservation-voltage-reduction-app/cvr_app_instances
 
 # C extensions
 *.so
