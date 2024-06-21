@@ -526,6 +526,7 @@ class ConservationVoltageReductionController(object):
             rtpDownLimitList = []
             rtpCurrentTap = []
             element_tuple = reg_list.pop(0)
+            psr_mrid = element_tuple[0]
             for rtp in element_tuple[1]:
                 rtpNameList.append(rtp.name)
                 reg = self.dssContext.Transformers.First()
@@ -539,7 +540,16 @@ class ConservationVoltageReductionController(object):
                     rtpDownLimitList.append(self.dssContext.Transformers.MinTap)
                     self.dssContext.Transformers.Wdg(2)
                     rtpCurrentTap.append(self.dssContext.Transformers.Tap)
-
+            self.dssContext.Solution.SolveNoControl()
+            converged = self.dssContext.Solution.Converged()
+            if converged:
+                print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                return_dict[psr] = {'setpoint': 1, 'object': cap_obj}
+                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                    print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                    success = True
+            else:
+                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
         return return_dict
 
     def notepad(self, rtp_list):
