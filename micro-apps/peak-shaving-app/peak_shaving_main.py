@@ -20,56 +20,19 @@ DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
 
 
-class ConservationVoltageReductionController(object):
-    """CVR Control Class
-        This class implements a centralized algorithm for conservation voltage reduction by controlling regulators and
-        capacitors in the distribution model.
+class PeakShavingController(object):
+    """Peak Shaving Control Class
+        This class implements a centralized algorithm for feeder peak shaving by controlling batteries in the
+        distribution model.
 
         Attributes:
-            sim_id: The simulation id that the instance will be perfoming cvr on. If the sim_id is None then the
-                    application will assume it is performing cvr on the actual field devices.
+            sim_id: The simulation id that the instance will be perfoming peak shaving on. If the sim_id is None then the
+                    application will assume it is performing peak shaving on the actual field devices.
                 Type: str.
                 Default: None.
-            period: The amount of time to wait before calculating new cvr setpoints.
-                Type: int.
-                Default: None.
         Methods:
-            initialize(headers:Dict[Any], message:Dict[Any]): This callback function will trigger the application to
-                    read the model database to find all the measurements in the model as well as the controllable
-                    regulators and capacitors in the sytem.
-                Arguments:
-                    headers: A dictionary containing header information on the message received from the GridAPPS-D
-                            platform.
-                        Type: dictionary.
-                        Default: NA.
-                    message: A dictionary containing the message received from the GridAPPS-D platform.
-                        Type: dictionary.
-                        Default: NA.
-                Returns: NA.
-            enableControl(headers:Dict[Any], message:Dict[Any]): This callback function will tell the application that
-                    it is allowed to perform cvr on the systems or simulations its tied to.
-                Arguments:
-                    headers: A dictionary containing header information on the message received from the GridAPPS-D
-                            platform.
-                        Type: dictionary.
-                        Default: NA.
-                    message: A dictionary containing the message received from the GridAPPS-D platform.
-                        Type: dictionary.
-                        Default: NA.
-                Returns: NA.
-            disableControl(headers:Dict[Any], message:Dict[Any]): This callback function will prevent the application
-                    from performing cvr on the systems or simulations its tied to.
-                Arguments:
-                    headers: A dictionary containing header information on the message received from the GridAPPS-D
-                            platform.
-                        Type: dictionary.
-                        Default: NA.
-                    message: A dictionary containing the message received from the GridAPPS-D platform.
-                        Type: dictionary.
-                        Default: NA.
-                Returns: NA.
             on_measurement(headers:Dict[Any], message:Dict[Any]): This callback function will be used to update the
-                    applications measurements dictionary needed for cvr control.
+                    applications measurements dictionary needed for peak shaving control.
                 Arguments:
                     headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
@@ -105,12 +68,6 @@ class ConservationVoltageReductionController(object):
         self.controllable_batteries_A = {}
         self.controllable_batteries_B = {}
         self.controllable_batteries_C = {}
-        self.battery_va_measurements_A = {}
-        self.battery_va_measurements_B = {}
-        self.battery_va_measurements_C = {}
-        self.battery_soc_measurements_A = {}
-        self.battery_soc_measurements_B = {}
-        self.battery_soc_measurements_C = {}
         self.peak_va_measurements_A = {}
         self.peak_va_measurements_B = {}
         self.peak_va_measurements_C = {}
@@ -136,20 +93,16 @@ class ConservationVoltageReductionController(object):
             self.setpoints_topic = topics.simulation_input_topic(self.simulation_id)
         else:
             self.setpoints_topic = topics.field_input_topic()
-        # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
+        # Read model_id from cimgraph to get all the controllable batteries, and measurements.
         self.graph_model = buildGraphModel(model_id)
-        # Store controllable_capacitors
-        # print(self.controllable_capacitors.keys())
-        # Store controllable_regulators
         self.installed_battery_capacity_A = 0.0
         self.installed_battery_capacity_B = 0.0
         self.installed_battery_capacity_C = 0.0
         self.installed_battery_power_A = 0.0
         self.installed_battery_power_B = 0.0
         self.installed_battery_power_C = 0.0
+        self.configureBatteryProperties()
         powerElectronicsConnection = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
-        # print(powerTransformers.keys())
-        # print(ratioTapChangers.keys())
         for mRID, powerElectronicsConnection in powerElectronicsConnection.items():
             hasBatterySource = False
             phase = self.find_primary_phase(powerElectronicsConnection)
@@ -160,8 +113,7 @@ class ConservationVoltageReductionController(object):
                     self.installed_battery_capacity += float(powerElectronicsUnit.ratedE)
             if hasBatterySource:
                 self.installed_battery_power += float(powerElectronicsConnection.ratedS)
-        # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
-        # print(self.controllable_regulators.keys())
+        # Store measurements of feeder head load, battery output and state of charge.
         measurements = self.graph_model.graph.get(cim.Analog, {})
         # print(measurements.keys())
         for meas in measurements.values():
@@ -179,35 +131,104 @@ class ConservationVoltageReductionController(object):
                         self.pos_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
                     self.pos_measurements[mrid]['measurement_objects'][meas.mRID] = meas
                     self.pos_measurements[mrid]['measurement_values'][meas.mRID] = None
-        # for r in self.controllable_regulators.values():
-        #     print(json.dumps(r['PhasesToName'], indent=4, sort_keys=True))
         if self.simulation is not None:
             self.simulation.start_simulation()
-        self.next_control_time = 0
-        self.voltage_violation_time = -1
         self.isValid = True
         self.first_message = True
+
+    def configureBatteryProperties(self):
+        '''This function uses cimgraph to populate the following properties:
+
+            self.controllable_batteries_A
+            self.controllable_batteries_B
+            self.controllable_batteries_C
+        '''
+        powerElectronicsConnections = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
+        for pec in powerElectronicsConnections:
+            isBatteryInverter = False
+            batteryCapacity = 0.0
+            for powerElectronicsUnit in pec.PowerElectronicsUnit:
+                if isinstance(powerElectronicsUnit, cim.BatteryUnit):
+                    isBatteryInverter = True
+                    batteryCapacity += float(powerElectronicsUnit.ratedE)
+            if isBatteryInverter:
+                inverterPhases = self.getInverterPhases(pec)
+                if inverterPhases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                    self.installed_battery_capacity_A += batteryCapacity
+                    self.installed_battery_power_A += float(pec.ratedS)
+                    self.controllable_batteries_A[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.A, cim.PhaseCode.AN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.A, cim.PhaseCode.AN]),
+                            'value': None
+                        }
+                    }
+                elif inverterPhases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                    self.installed_battery_capacity_B += batteryCapacity
+                    self.installed_battery_power_B += float(pec.ratedS)
+                    self.controllable_batteries_B[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.B, cim.PhaseCode.BN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.B, cim.PhaseCode.BN]),
+                            'value': None
+                        }
+                    }
+                elif inverterPhases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                    self.installed_battery_capacity_C += batteryCapacity
+                    self.installed_battery_power_C += float(pec.ratedS)
+                    self.controllable_batteries_C[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.C, cim.PhaseCode.CN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.C, cim.PhaseCode.CN]),
+                            'value': None
+                        }
+                    }
+
+    def getInverterPhases(self, cimObj):
+        # algorithm that attempts to find the upstream centertapped transformer feeding secondary system inverters.
+        phaseCode = None
+        if not isinstance(cimObj, cim.PowerElectronicsConnection):
+            raise TypeError('PeakShavingController.getInverterPhases(): cimObj must be an instance of '
+                            'cim.PowerElectronicsConnection!')
+        strPhases = ''
+        for pecp in cimObj.PowerElectronicsConnectionPhases:
+            if pecp.phase != cim.SinglePhaseKind.s1 and pecp.phase != cim.SinglePhaseKind.s2:
+                strPhases += pecp.phase.value
+            else:
+                strPhases = pecp.phase.value
+        if 'A' in strPhases or 'B' in strPhases or 'C' in strPhases:
+            phaseCodeStr = ''
+            if 'A' in strPhases:
+                phaseCodeStr += 'A'
+            if 'B' in strPhases:
+                phaseCodeStr += 'B'
+            if 'C' in strPhases:
+                phaseCodeStr += 'C'
+            phaseCode = cim.PhaseCode('phaseCodeStr')
+        else:    # inverter is on the secondary system need to trace up to the centertapped tansformer.
+            phaseCode = self.findPrimaryPhase(cimObj)
+        return phaseCode
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
         if not isinstance(sim, Simulation):
             self.log.error('')
-        for mrid in self.pnv_measurements.keys():
-            meas = measurements.get(mrid)
-            if meas is not None:
-                self.pnv_measurements[mrid]['measurement_value'] = meas
-        for psr_mrid in self.va_measurements.keys():
-            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
-                meas = measurements.get(mrid)
-                if meas is not None:
-                    self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
-        for psr_mrid in self.pos_measurements.keys():
-            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
-                meas = measurements.get(mrid)
-                if meas is not None:
-                    self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
-        self.calculate_per_unit_voltage()
-        self.update_opendss_with_measurements()
+        #TODO: update measurements
         self.peak_shaving_control()
         if self.simulation is not None:
             self.simulation.resume()
@@ -219,6 +240,7 @@ class ConservationVoltageReductionController(object):
 
     def peak_shaving_control(self):
         self.desired_setpoints = {}
+
         if self.desired_setpoints:
             self.send_setpoints()
 
@@ -254,13 +276,71 @@ class ConservationVoltageReductionController(object):
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
-        self.log.info(f'Simulation for ConservationVoltageReductionController:{self.id} has finished. This application '
+        self.log.info(f'Simulation for PeakShavingController:{self.id} has finished. This application '
                       'instance can be deleted.')
         self.isValid = False
 
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def findMeasurement(measurementsList, type, phases):
+    rv = None
+    for measurement in measurementsList:
+        if measurement.measurementType == type and measurement.phases in phases:
+            rv = measurement
+            break
+    if rv is None:
+        raise RuntimeError(f'findMeasurement(): No measurement of type {type} exists for any of the given phases!.')
+    return rv
+
+
+def findPrimaryPhase(cimObj):
+    '''
+        Helper function for finding the primary phase an instance of cim.ConductingEquipment on the secondary
+        system is connected to.
+    '''
+    if not isinstance(cimObj, cim.ConductingEquipment):
+        raise TypeError('findPrimaryPhase(): cimObj must be an instance of cim.ConductingEquipment!')
+    equipmentToCheck = [cimObj]
+    phaseCode = None
+    xfmr = None
+    i = 0
+    while not xfmr and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            if isinstance(eq, cim.PowerTransformer):
+                xfmr = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not xfmr:
+        raise RuntimeError('findPrimaryPhase(): no upstream centertapped transformer could be found for secondary '
+                           f'system object {cimObj.name}!')
+    for tank in xfmr.TransformerTanks:
+        if phaseCode is not None:
+            break
+        for tankEnd in tank.TransformerTankEnds:
+            if tankEnd.phases not in [
+                    cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
+                    cim.PhaseCode.s2, cim.PhaseCode.s2N
+            ]:
+                phaseCode = tankEnd.phases
+                break
+    if not phaseCode:
+        raise RuntimeError('findPrimaryPhase(): the upstream centertapped transformer has no primary phase defined!?')
+    return phaseCode
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
@@ -398,17 +478,16 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     else:
         #TODO: query platform for running simulations which is currently not implemented in the GridAPPS-D Api
         pass
-    # Create an cvr controller instance for all the real systems in the database
+    # Create an peak shaving controller instance for all the real systems in the database
     # for m in models:
     #     m_id = m.get('modelId')
-    #     app_instances['field_instances'][m_id] = ConservationVoltageReductionController(gad_object, m_id)
+    #     app_instances['field_instances'][m_id] = PeakShavingController(gad_object, m_id)
     for sim_id, m_id in platform_simulations.items():
-        app_instances['external_simulation_instances'][sim_id] = ConservationVoltageReductionController(gad_object,
-                                                                                                        m_id,
-                                                                                                        sim_id=sim_id)
+        app_instances['external_simulation_instances'][sim_id] = PeakShavingController(gad_object, m_id, sim_id=sim_id)
     for m_id, simulation in local_simulations.items():
-        app_instances['local_simulation_instances'][m_id] = ConservationVoltageReductionController(
-            gad_object, m_id, simulation=simulation)
+        app_instances['local_simulation_instances'][m_id] = PeakShavingController(gad_object,
+                                                                                  m_id,
+                                                                                  simulation=simulation)
     app_instances_exist = False
     if len(app_instances['field_instances']) > 0:
         app_instances_exist = True
@@ -456,7 +535,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
             if not app_instances_exist:
                 application_downtime = int(time.time()) - application_uptime
                 if application_downtime > 3600:
-                    gad_log.info('There have been no running instances ConservationVoltageReductionController '
+                    gad_log.info('There have been no running instances PeakShavingController '
                                  'instances for an hour. Shutting down the application.')
                     gad_object.set_application_status(ProcessStatusEnum.STOPPING)
                     gad_object.disconnect()
@@ -477,7 +556,10 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('model_id', nargs='?', default=None, help='The mrid of the cim model to perform cvr on.')
+    parser.add_argument('model_id',
+                        nargs='?',
+                        default=None,
+                        help='The mrid of the cim model to perform peak shaving on.')
     parser.add_argument('-s',
                         '--start_simulations',
                         action='store_true',
