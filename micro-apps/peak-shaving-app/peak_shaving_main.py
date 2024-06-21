@@ -68,12 +68,6 @@ class PeakShavingController(object):
         self.controllable_batteries_A = {}
         self.controllable_batteries_B = {}
         self.controllable_batteries_C = {}
-        self.battery_va_measurements_A = {}
-        self.battery_va_measurements_B = {}
-        self.battery_va_measurements_C = {}
-        self.battery_soc_measurements_A = {}
-        self.battery_soc_measurements_B = {}
-        self.battery_soc_measurements_C = {}
         self.peak_va_measurements_A = {}
         self.peak_va_measurements_B = {}
         self.peak_va_measurements_C = {}
@@ -148,12 +142,6 @@ class PeakShavingController(object):
             self.controllable_batteries_A
             self.controllable_batteries_B
             self.controllable_batteries_C
-            self.battery_va_measurements_A
-            self.battery_va_measurements_B
-            self.battery_va_measurements_C
-            self.battery_soc_measurements_A
-            self.battery_soc_measurements_B
-            self.battery_soc_measurements_C
         '''
         powerElectronicsConnections = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
         for pec in powerElectronicsConnections:
@@ -165,6 +153,51 @@ class PeakShavingController(object):
                     batteryCapacity += float(powerElectronicsUnit.ratedE)
             if isBatteryInverter:
                 inverterPhases = self.getInverterPhases(pec)
+                if inverterPhases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                    self.installed_battery_capacity_A += batteryCapacity
+                    self.installed_battery_power_A += float(pec.ratedS)
+                    self.controllable_batteries_A[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.A, cim.PhaseCode.AN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.A, cim.PhaseCode.AN]),
+                            'value': None
+                        }
+                    }
+                elif inverterPhases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                    self.installed_battery_capacity_B += batteryCapacity
+                    self.installed_battery_power_B += float(pec.ratedS)
+                    self.controllable_batteries_B[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.B, cim.PhaseCode.BN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.B, cim.PhaseCode.BN]),
+                            'value': None
+                        }
+                    }
+                elif inverterPhases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                    self.installed_battery_capacity_C += batteryCapacity
+                    self.installed_battery_power_C += float(pec.ratedS)
+                    self.controllable_batteries_C[pec.mrid] = {
+                        'object': pec,
+                        'maximum_power': float(pec.ratedS),
+                        'power_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.C, cim.PhaseCode.CN]),
+                            'value': None
+                        },
+                        'soc_measurement': {
+                            'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.C, cim.PhaseCode.CN]),
+                            'value': None
+                        }
+                    }
 
     def getInverterPhases(self, cimObj):
         # algorithm that attempts to find the upstream centertapped transformer feeding secondary system inverters.
@@ -250,6 +283,17 @@ class PeakShavingController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def findMeasurement(measurementsList, type, phases):
+    rv = None
+    for measurement in measurementsList:
+        if measurement.measurementType == type and measurement.phases in phases:
+            rv = measurement
+            break
+    if rv is None:
+        raise RuntimeError(f'findMeasurement(): No measurement of type {type} exists for any of the given phases!.')
+    return rv
 
 
 def findPrimaryPhase(cimObj):
