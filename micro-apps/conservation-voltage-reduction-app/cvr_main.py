@@ -2,6 +2,7 @@ import importlib
 import math
 import os
 from argparse import ArgumentParser
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Union
 from uuid import uuid4
@@ -403,11 +404,10 @@ class ConservationVoltageReductionController(object):
                 # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
                 capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos['value'], True))
         regulator_list = []
-        for reg_mrid, reg in self.controllable_regulators.items():
-            reg_meas_dict = self.pos_measurements.get(reg_mrid)
-            tapStep = None
-            if reg_meas_dict is not None:
-                print()
+        for psr_mrid in self.controllable_regulators.keys():
+            tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
+            if tapChangersList:
+                regulator_list.append((psr_mrid, deepcopy(tapChangersList)))
         if not (capacitor_list or regulator_list):
             return
         meas_list = []
@@ -425,7 +425,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    print()
+                    self.increase_voltage_regulator()
             else:
                 if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
@@ -515,6 +515,35 @@ class ConservationVoltageReductionController(object):
                 self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
         print(f'return_dict length: {len(return_dict)}')
         return return_dict
+
+    def increase_voltage_regulator(self, reg_list: list) -> dict:
+        tap_budget = 5
+        return_dict = {}
+        success = False
+        while reg_list and not success:
+            rtpNameList = []
+            rtpUpLimitList = []
+            rtpDownLimitList = []
+            rtpCurrentTap = []
+            element_tuple = reg_list.pop(0)
+            for rtp in element_tuple[1]:
+                rtpNameList.append(rtp.name)
+                reg = self.dssContext.Transformers.First()
+                while reg:
+                    if self.dssContext.Transformers.Name() == rtp.name:
+                        break
+                    else:
+                        reg = self.dssContext.Transformers.Next()
+                if reg:
+                    rtpUpLimitList.append(self.dssContext.Transformers.MaxTap)
+                    rtpDownLimitList.append(self.dssContext.Transformers.MinTap)
+                    self.dssContext.Transformers.Wdg(2)
+                    rtpCurrentTap.append(self.dssContext.Transformers.Tap)
+
+        return return_dict
+
+    def notepad(self, rtp_list):
+        return
 
     def send_setpoints(self):
         self.differenceBuilder.clear()
