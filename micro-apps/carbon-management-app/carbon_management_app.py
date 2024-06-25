@@ -1,51 +1,30 @@
 import time
 import os
-import traceback
-import logging
 import math
 from pprint import pprint
 # import networkx as nx
-import numpy as np
+# import numpy as np
 import cvxpy as cp
 # from pandas import DataFrame
-from typing import Any, Dict, Union
+from typing import Any, Dict
 import importlib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from argparse import ArgumentParser
 import json
-from typing import Dict, Tuple, NamedTuple
+from typing import Dict
 from cimgraph import utils
 from cimgraph.databases import ConnectionParameters, BlazegraphConnection
 from cimgraph.models import FeederModel
-from cimgraph.data_profile.rc4_2021 import ACLineSegment
-from cimgraph.data_profile.rc4_2021 import ACLineSegmentPhase
-from cimgraph.data_profile.rc4_2021 import Terminal
-from cimgraph.data_profile.rc4_2021 import ConnectivityNode
 from cimgraph.data_profile.rc4_2021 import EnergyConsumer
-from cimgraph.data_profile.rc4_2021 import EnergyConsumerPhase
 from cimgraph.data_profile.rc4_2021 import BatteryUnit
 from cimgraph.data_profile.rc4_2021 import PowerElectronicsConnection
-from cimgraph.data_profile.rc4_2021 import PowerElectronicsConnectionPhase
-from cimgraph.data_profile.rc4_2021 import LinearShuntCompensator
-from cimgraph.data_profile.rc4_2021 import LinearShuntCompensatorPhase
-from cimgraph.data_profile.rc4_2021 import TransformerTank
-from cimgraph.data_profile.rc4_2021 import TransformerTankEnd
-from cimgraph.data_profile.rc4_2021 import LoadBreakSwitch
-from cimgraph.data_profile.rc4_2021 import PositionPoint
-from cimgraph.data_profile.rc4_2021 import CoordinateSystem
-from cimgraph.data_profile.rc4_2021 import Location
-from cimgraph.data_profile.rc4_2021 import SinglePhaseKind
-from cimgraph.data_profile.rc4_2021 import Measurement
 from gridappsd import GridAPPSD, topics, DifferenceBuilder
-import gridappsd.utils
 from gridappsd.simulation import Simulation
 from gridappsd.simulation import PowerSystemConfig
-from gridappsd.simulation import ApplicationConfig
 from gridappsd.simulation import SimulationConfig
 from gridappsd.simulation import SimulationArgs
 from gridappsd.simulation import ModelCreationConfig
-from gridappsd.simulation import ServiceConfig
 from gridappsd import topics as t
 
 IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
@@ -159,6 +138,8 @@ class CarbonManagementApp(object):
         self.gad_obj = gad_obj
         self.init_batt_dis = True
         self._count = 0
+        self._publish_to_topic = topics.simulation_input_topic(simulation.simulation_id)
+        self._init_batt_diff = DifferenceBuilder(simulation.simulation_id)
 
         self.Battery = {}
         self.Solar = {}
@@ -220,9 +201,8 @@ class CarbonManagementApp(object):
                 if  measurement.phases.value is not None:
                     self.EnergyConsumer[ld_mrid]['measurementPhases'].append(measurement.phases.value)
 
-        # simulation.add_onmeasurement_callback(self.on_measurement)
         simulation.add_onmeasurement_callback(self.on_measurement)
-        simulation.start_simulation()
+        # simulation.start_simulation()
     
     def find_phase(self, degree):
         ref_points = [0, 120, -120]
@@ -233,8 +213,8 @@ class CarbonManagementApp(object):
     def pol2cart(self, mag, angle_deg):
         # Convert degrees to radians. GridAPPS-D spits angle in degrees
         angle_rad =  math.radians(angle_deg)
-        p = mag * np.cos(angle_rad)
-        q = mag * np.sin(angle_rad)
+        p = mag * math.cos(angle_rad)
+        q = mag * math.sin(angle_rad)
         return p, q
     
     def find_injection(self, object, measurements):
@@ -287,7 +267,7 @@ class CarbonManagementApp(object):
                     object[item]['P_inj'][2] = p
                     object[item]['Q_inj'][2] = q
     
-    def optimize_battery(self):
+    def optimize_battery(self, timestamp):
         # Define optimization variables
         n_batt = len(self.Battery)
         p_flow_A = cp.Variable(integer=False, name='p_flow_A')
@@ -315,7 +295,7 @@ class CarbonManagementApp(object):
             sum_flow_A += self.EnergyConsumer[load]['P_inj'][0]
             sum_flow_B += self.EnergyConsumer[load]['P_inj'][1]
             sum_flow_C += self.EnergyConsumer[load]['P_inj'][2]
-        
+        print(f'Substation flow without optimization at {timestamp}: ', sum_flow_A, sum_flow_B, sum_flow_C)
         idx = 0
         # For now, we assume battery to be 100% efficient. Need to rewrite the soc constraints if using different efficiency
         for batt in self.Battery:
@@ -366,25 +346,24 @@ class CarbonManagementApp(object):
         problem.solve()
 
         print('Optimization status:', problem.status, flush=True)
-        print('Substaton flow phases: ', p_flow_mod_A.value, p_flow_mod_B.value, p_flow_mod_C.value)
+        print('Substaton flow after optimization: ', p_flow_mod_A.value, p_flow_mod_B.value, p_flow_mod_C.value)
         print('Objective Function: ', problem.value)
-        for idx in range(5):
-            print('Batt dispatch and SOC: ', p_batt[idx].value, soc[idx].value,  P_batt_A[idx].value, P_batt_B[idx].value, P_batt_C[idx].value)
+
+        idx = 0
+        dispatch_batteries = {}
+        for batt in self.Battery:
+            name = self.Battery[batt]['name']
+            print(f'{name} dispatch and SOC: ', p_batt[idx].value, soc[idx].value,  P_batt_A[idx].value, P_batt_B[idx].value, P_batt_C[idx].value)
+            dispatch_batteries[batt] = {}
+            dispatch_batteries[batt]['p_batt'] =  p_batt[idx].value
+            idx += 1
+        
+        return dispatch_batteries
 
 
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
-        print(timestamp)
-        if self._count == 5:
-            # Dispatch battery to 0 to avoid confusing for inverter interfaced with both solar and battery
-            # _init_batt_diff = DifferenceBuilder(sim.simulation_id)
-            # _publish_to_topic = topics.simulation_input_topic(sim.simulation_id)
-            # if self.init_batt_dis:
-            #     _init_batt_diff.add_difference(batt, 'PowerElectronicsConnection.p', 0, 1)
-            #     msg = _init_batt_diff.get_message()
-            #     self.gad_obj.send(_publish_to_topic, json.dumps(msg))  
-            #     print(msg)
-            # self.init_batt_dis = False
-
+        # print(timestamp)
+        if self._count % 10 == 0:
             # Call function to extract simulation measurements from injection sources
             self.find_injection(self.Battery, measurements)
             self.find_injection(self.EnergyConsumer, measurements)
@@ -394,24 +373,16 @@ class CarbonManagementApp(object):
             for batt in self.Battery:
                 print(batt, self.Battery[batt]['name'], self.Battery[batt]['P_inj'], self.Battery[batt]['soc'])
             print('........')
-            for ld in self.EnergyConsumer:
-                print(ld, self.EnergyConsumer[ld]['name'], self.EnergyConsumer[ld]['P_inj'])
-            print('........')
-            for pv in self.Solar:
-                print(pv, self.Solar[pv]['name'], self.Solar[pv]['P_inj'])
 
-            out_file = open("solar.json", "w") 
-            json.dump(self.Solar, out_file, indent = 6) 
-            out_file.close() 
+            # Invoke optimization for given grid condition
+            dispatch_values = self.optimize_battery(timestamp)
 
-            out_file = open("energysoncumer.json", "w") 
-            json.dump(self.EnergyConsumer, out_file, indent = 6) 
-            out_file.close() 
-
-            out_file = open("battery.json", "w") 
-            json.dump(self.Battery, out_file, indent = 6) 
-            out_file.close() 
-            self.optimize_battery()
+            # Dispatch battery. Note that -ve values in forward difference means charging batteries
+            # Make necessary changes in sign convention from optimization values            
+            for unit in dispatch_values:
+                self._init_batt_diff.add_difference(unit, 'PowerElectronicsConnection.p', - dispatch_values[unit]['p_batt'], 0.0)
+                msg = self._init_batt_diff.get_message()
+                self.gad_obj.send(self._publish_to_topic, json.dumps(msg))
         self._count += 1
 
 
@@ -544,6 +515,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     
     for m_id, simulation in local_simulations.items():
         measurements_topic = topics.simulation_output_topic(simulation)
+        simulation.start_simulation()
         c_mapp = CarbonManagementApp(
             gapps, m_id, network, simulation=simulation)
         # gapps.subscribe(measurements_topic, c_mapp)
