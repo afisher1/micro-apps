@@ -165,7 +165,7 @@ class ConservationVoltageReductionController(object):
                             self.controllable_regulators[mRID] = {}
                             self.controllable_regulators[mRID]['RatioTapChangers'] = []
                             self.controllable_regulators[mRID]['PhasesToName'] = {}
-                        self.controllable_regulators[mRID]['regulator_name'] = powerTransformer.name
+                        self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
                             transformerEnd.RatioTapChanger.name
@@ -404,10 +404,10 @@ class ConservationVoltageReductionController(object):
                 # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
                 capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos['value'], True))
         regulator_list = []
-        for psr_mrid in self.controllable_regulators.keys():
+        for psr_mrid, psr_dict in self.controllable_regulators.items():
             tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
             if tapChangersList:
-                regulator_list.append((psr_mrid, deepcopy(tapChangersList)))
+                regulator_list.append((psr_mrid, deepcopy(tapChangersList), psr_dict[psr_mrid]['regulator_object']))
         if not (capacitor_list or regulator_list):
             return
         meas_list = []
@@ -425,7 +425,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    self.increase_voltage_regulator()
+                    print()
             else:
                 if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
@@ -435,7 +435,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    print()
+                    self.increase_voltage_regulator()
 
         # FIXMEOr: Check the update_opendss_with_measurements function.
 
@@ -521,39 +521,50 @@ class ConservationVoltageReductionController(object):
         return_dict = {}
         success = False
         while reg_list and not success:
-            rtpNameList = []
-            rtpUpLimitList = []
-            rtpDownLimitList = []
-            rtpCurrentTap = []
             element_tuple = reg_list.pop(0)
             psr_mrid = element_tuple[0]
             for rtp in element_tuple[1]:
-                rtpNameList.append(rtp.name)
+                if success:
+                    break
+                rtpName = rtp.name
                 reg = self.dssContext.Transformers.First()
                 while reg:
-                    if self.dssContext.Transformers.Name() == rtp.name:
+                    if self.dssContext.Transformers.Name() == rtpName:
                         break
                     else:
                         reg = self.dssContext.Transformers.Next()
                 if reg:
-                    rtpUpLimitList.append(self.dssContext.Transformers.MaxTap)
-                    rtpDownLimitList.append(self.dssContext.Transformers.MinTap)
+                    rtpUpLimit = self.dssContext.Transformers.MaxTap
+                    rtpDownLimit = self.dssContext.Transformers.MinTap
+                    rtpNumTaps = self.dssContext.Transformers.NumTaps
                     self.dssContext.Transformers.Wdg(2)
-                    rtpCurrentTap.append(self.dssContext.Transformers.Tap)
-            self.dssContext.Solution.SolveNoControl()
-            converged = self.dssContext.Solution.Converged()
-            if converged:
-                print(f'Powerflow converged when modifying regulator {psr_mrid}.')
-                return_dict[psr] = {'setpoint': 1, 'object': cap_obj}
-                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                    print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
-                    success = True
-            else:
-                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+                    rtpCurrentTap = self.dssContext.Transformers.Tap
+                    tapStep = (rtpUpLimit - rtpDownLimit) / rtpNumTaps
+                for i in range(tap_budget):
+                    if rtpCurrentTap + tapStep > rtpUpLimit:
+                        break
+                    self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
+                    self.dssContext.Solution.SolveNoControl()
+                    converged = self.dssContext.Solution.Converged()
+                    if converged:
+                        print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                        return_dict[psr_mrid] = {
+                            'setpoint': rtpCurrentTap + tapStep,
+                            'old_setpoint': rtpCurrentTap,
+                            'object': element_tuple[2]
+                        }
+                        rtpCurrentTap = rtpCurrentTap + tapStep
+                        if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                            print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                            success = True
+                            break
+                    else:
+                        self.dssContext.Transformers.Tap(rtpCurrentTap)
+                        break
         return return_dict
 
-    def notepad(self, rtp_list):
-        return
+    def reg_openDSS_to_CIMHub(self, turnsRatio):
+        return turnsRatio
 
     def send_setpoints(self):
         self.differenceBuilder.clear()
