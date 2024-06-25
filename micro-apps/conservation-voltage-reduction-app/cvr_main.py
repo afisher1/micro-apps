@@ -204,8 +204,6 @@ class ConservationVoltageReductionController(object):
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
-        if not isinstance(sim, Simulation):
-            self.log.error('')
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
