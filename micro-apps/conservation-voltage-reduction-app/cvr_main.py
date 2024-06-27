@@ -158,6 +158,19 @@ class ConservationVoltageReductionController(object):
         # print(powerTransformers.keys())
         # print(ratioTapChangers.keys())
         for mRID, powerTransformer in powerTransformers.items():
+            for powerTransformerEnd in powerTransformer.PowerTransformerEnds:
+                if powerTransformerEnd.RatioTapChanger is not None:
+                    if mRID not in self.controllable_regulators.keys():
+                        self.controllable_regulators[mRID] = {}
+                        self.controllable_regulators[mRID]['RatioTapChangers'] = []
+                        self.controllable_regulators[mRID]['PhasesToName'] = {}
+                    self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
+                    self.controllable_regulators[mRID]['RatioTapChangers'].append(powerTransformerEnd.RatioTapChanger)
+                    self.controllable_regulators[mRID]['PhasesToName'] = {
+                        'A': powerTransformer.name,
+                        'B': powerTransformer.name,
+                        'C': powerTransformer.name
+                    }
             for transformerTank in powerTransformer.TransformerTanks:
                 for transformerEnd in transformerTank.TransformerTankEnds:
                     if transformerEnd.RatioTapChanger is not None:
@@ -168,7 +181,8 @@ class ConservationVoltageReductionController(object):
                         self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
-                            transformerEnd.RatioTapChanger.name
+                            transformerTank.name
+
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
         measurements = self.graph_model.graph.get(cim.Analog, {})
@@ -407,7 +421,7 @@ class ConservationVoltageReductionController(object):
         for psr_mrid, psr_dict in self.controllable_regulators.items():
             tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
             if tapChangersList:
-                regulator_list.append((psr_mrid, deepcopy(tapChangersList), psr_dict[psr_mrid]['regulator_object']))
+                regulator_list.append((psr_mrid, deepcopy(tapChangersList)))
         if not (capacitor_list or regulator_list):
             return
         meas_list = []
@@ -523,44 +537,53 @@ class ConservationVoltageReductionController(object):
         while reg_list and not success:
             element_tuple = reg_list.pop(0)
             psr_mrid = element_tuple[0]
-            for rtp in element_tuple[1]:
+            for i in range(tap_budget):
                 if success:
                     break
-                rtpName = rtp.name
-                reg = self.dssContext.Transformers.First()
-                while reg:
-                    if self.dssContext.Transformers.Name() == rtpName:
+                for rtp in element_tuple[1]:
+                    if success:
                         break
-                    else:
-                        reg = self.dssContext.Transformers.Next()
-                if reg:
-                    rtpUpLimit = self.dssContext.Transformers.MaxTap
-                    rtpDownLimit = self.dssContext.Transformers.MinTap
-                    rtpNumTaps = self.dssContext.Transformers.NumTaps
-                    self.dssContext.Transformers.Wdg(2)
-                    rtpCurrentTap = self.dssContext.Transformers.Tap
-                    tapStep = (rtpUpLimit - rtpDownLimit) / rtpNumTaps
-                for i in range(tap_budget):
-                    if rtpCurrentTap + tapStep > rtpUpLimit:
-                        break
-                    self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
-                    self.dssContext.Solution.SolveNoControl()
-                    converged = self.dssContext.Solution.Converged()
-                    if converged:
-                        print(f'Powerflow converged when modifying regulator {psr_mrid}.')
-                        return_dict[psr_mrid] = {
-                            'setpoint': rtpCurrentTap + tapStep,
-                            'old_setpoint': rtpCurrentTap,
-                            'object': element_tuple[2]
-                        }
-                        rtpCurrentTap = rtpCurrentTap + tapStep
-                        if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                            print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
-                            success = True
+                    xfmrEnd = rtp.TransformerEnd
+                    if isinstance(xfmrEnd, cim.PowerTransformerEnd):
+                        rtpName = xfmrEnd.PowerTransformer.name
+                    elif isinstance(xfmrEnd, cim.TransformerTankEnd):
+                        rtpName = xfmrEnd.TransformerTank.name
+                    reg = self.dssContext.Transformers.First()
+                    while reg:
+                        if self.dssContext.Transformers.Name() == rtpName:
                             break
-                    else:
-                        self.dssContext.Transformers.Tap(rtpCurrentTap)
-                        break
+                        else:
+                            reg = self.dssContext.Transformers.Next()
+                    if reg:
+                        self.dssContext.Transformers.Wdg(2)
+                        if i == 0:
+                            oldSetpointRatio = self.dssContext.Transformers.Tap()
+                        maxTapRatio = self.dssContext.Transformers.MaxTap()
+                        rtpCurrentTap = oldSetpointRatio
+                        tapStep = float(rtp.step)
+                        if rtpCurrentTap >= maxTapRatio:
+                            break
+                        self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
+                        self.dssContext.Solution.SolveNoControl()
+                        converged = self.dssContext.Solution.Converged()
+                        if converged:
+                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                            if rtp.mRID not in return_dict.keys():
+                                return_dict[rtp.mRID] = {
+                                    'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
+                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio, rtp),
+                                    'object': rtp
+                                }
+                            else:
+                                return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp)
+                            rtpCurrentTap = rtpCurrentTap + tapStep
+                            if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                                print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                                success = True
+                                break
+                        else:
+                            self.dssContext.Transformers.Tap(rtpCurrentTap)
+                            break
         return return_dict
 
     def reg_openDSS_to_CIMHub(self, turnsRatio):
@@ -575,21 +598,11 @@ class ConservationVoltageReductionController(object):
             if isinstance(cimObj, cim.LinearShuntCompensator):
                 self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
                                                       int(not newSetpoint[0]))
-            elif isinstance(cimObj, cim.PowerTransformer):
-                tapChangersList = self.controllable_regulators.get(mrid, {}).get('RatioTapChangers', [])
-                currentTapPositions = self.pos_measurements.get(mrid, {})
+            elif isinstance(cimObj, cim.RatioTapChanger):
+                tapChangersList = self.controllable_regulators.get(cim.PowerTransformer.mRID,
+                                                                   {}).get('RatioTapChangers', [])
                 for rtp in tapChangersList:
-                    phases = rtp.TransformerEnd.phases
-                    for measurement_object in currentTapPositions.get('measurement_objects', {}).values():
-                        if measurement_object.phases == phases:
-                            currentSetpoint = currentTapPositions.get('measurement_values',
-                                                                      {}).get(measurement_object.mRID, {}).get('value')
-                            if not currentSetpoint:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, 'NA')
-                            else:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint,
-                                                                      currentSetpoint)
-                            break
+                    self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
             else:
                 self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
                                  f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
@@ -605,6 +618,50 @@ class ConservationVoltageReductionController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def tapPositionToTapRatio(tapPosition: int, ratioTapChanger) -> float:
+    '''Converts integer tap position to a pu turns ratio for a given cim.RatioTapChanger instance'''
+    if not isinstance(tapPosition, int):
+        raise TypeError('tapPositionToTapRatio(): tapPosition must be an int.')
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('tapPositionToTapRatio(): ratioTapChanger must be a cim.RatioTapChanger.')
+    maxTapPosition = int(ratioTapChanger.highStep)
+    minTapPosition = int(ratioTapChanger.lowStep)
+    neutralTapPosition = int(ratioTapChanger.nuetralStep)
+    stepRatio = float(ratioTapChanger.step)
+    if tapPosition > maxTapPosition or tapPosition < minTapPosition:
+        raise ValueError('tapPostionToTapRatio(): tapPosition must be within the maximum and minimum tap positions of '
+                         'the ratioTapChanger!')
+    if neutralTapPosition is None:
+        neutralTapPosition = 0
+    tapPostionRatio = 1.0 + (float(tapPosition - neutralTapPosition) * stepRatio)
+    return tapPostionRatio
+
+
+def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
+    '''Converts pu turn ratio tap setting to an integer tap position for a given cim.RatioTapChanger instance'''
+    if not isinstance(tapPositionRatio, float):
+        raise TypeError('tapRatioToTapPosition(): tapPositionRatio must be a float.')
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('tapRatioToTapPosition(): ratioTapChanger must be a cim.RatioTapChanger.')
+    maxTapPosition = int(ratioTapChanger.highStep)
+    minTapPosition = int(ratioTapChanger.lowStep)
+    neutralTapPosition = int(ratioTapChanger.nuetralStep)
+    stepRatio = float(ratioTapChanger.step)
+    if tapPositionRatio > tapPositionToTapRatio(maxTapPosition,
+                                                ratioTapChanger) or tapPositionRatio < tapPositionToTapRatio(
+                                                    minTapPosition, ratioTapChanger):
+        raise ValueError('tapRatioToTapPosition(): tapPositionRatio must be within the maximum and minimum tap '
+                         'positions of the ratioTapChanger!')
+    if neutralTapPosition is None:
+        neutralTapPosition = 0
+    tapPosition = math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5) + neutralTapPosition
+    if tapPosition > maxTapPosition:
+        tapPosition = maxTapPosition
+    elif tapPosition < minTapPosition:
+        tapPosition = minTapPosition
+    return tapPosition
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
