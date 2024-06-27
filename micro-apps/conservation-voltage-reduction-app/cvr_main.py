@@ -2,7 +2,6 @@ import importlib
 import math
 import os
 from argparse import ArgumentParser
-from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Union
 from uuid import uuid4
@@ -158,7 +157,7 @@ class ConservationVoltageReductionController(object):
         # print(powerTransformers.keys())
         # print(ratioTapChangers.keys())
         for mRID, powerTransformer in powerTransformers.items():
-            for powerTransformerEnd in powerTransformer.PowerTransformerEnds:
+            for powerTransformerEnd in powerTransformer.PowerTransformerEnd:
                 if powerTransformerEnd.RatioTapChanger is not None:
                     if mRID not in self.controllable_regulators.keys():
                         self.controllable_regulators[mRID] = {}
@@ -432,7 +431,7 @@ class ConservationVoltageReductionController(object):
         for psr_mrid, psr_dict in self.controllable_regulators.items():
             tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
             if tapChangersList:
-                regulator_list.append((psr_mrid, deepcopy(tapChangersList), phases))
+                regulator_list.append((psr_mrid, tapChangersList, phases))
         if not (capacitor_list or regulator_list):
             return
         meas_list = []
@@ -450,7 +449,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    self.desired_setpoint.update(self.decrease_voltage_regulator(regulator_list))
+                    self.desired_setpoints.update(self.decrease_voltage_regulator(regulator_list))
             else:
                 if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
@@ -460,7 +459,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    self.desired_setpoint.update(self.increase_voltage_regulator(regulator_list))
+                    self.desired_setpoints.update(self.increase_voltage_regulator(regulator_list))
 
         # FIXMEOr: Check the update_opendss_with_measurements function.
 
@@ -549,11 +548,13 @@ class ConservationVoltageReductionController(object):
             psr_mrid = element_tuple[0]
             oldSetpointRatio = [None] * len(element_tuple[1])
             newSetpointRatio = [None] * len(element_tuple[1])
-            stopDecrease = False
+            stopDecrease = [False] * len(element_tuple[1])
             for i in range(tap_budget):
-                if stopDecrease:
+                if False not in stopDecrease:
                     break
                 for j in range(len(element_tuple[1])):
+                    if stopDecrease[j]:
+                        continue
                     rtp = element_tuple[1][j]
                     xfmrEnd = rtp.TransformerEnd
                     rtpName = ''
@@ -596,9 +597,10 @@ class ConservationVoltageReductionController(object):
                                 rtpCurrentTap = rtpCurrentTap + tapStep
                                 newSetpointRatio[j] = rtpCurrentTap
                             else:
-                                self.dssContext.Transformer.Tap(newSetpointRatio[j])
+                                stopDecrease[j] = True
+                                self.dssContext.Transformers.Tap(newSetpointRatio[j])
                         else:
-                            self.dssContext.Transformer.Tap(newSetpointRatio[j])
+                            self.dssContext.Transformers.Tap(newSetpointRatio[j])
                             break
         return return_dict
 
@@ -869,8 +871,8 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
-    #   duration=f'{24*3600}',
-        duration=120,
+        duration=f'{24*3600}',
+    # duration=120,
         simulation_name=sim_name,
         run_realtime=False,
         pause_after_measurements=False)
