@@ -243,16 +243,21 @@ class ConservationVoltageReductionController(object):
             self.voltage_violation_time = -1
         else:
             total_violation_time = 0
-            for val in self.pnv_measurements_pu.values():
+            voltage_violation_phases = ''
+            for mrid, val in self.pnv_measurements_pu.items():
                 if val is not None:
                     if val < self.low_volt_lim:
                         if self.voltage_violation_time < 0:
                             self.voltage_violation_time = int(timestamp)
+                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                            if isinstance(meas, cim.Measurement):
+                                if meas.phases.value not in voltage_violation_phases:
+                                    voltage_violation_phases += meas.phases.value
                         else:
                             total_violation_time = int(timestamp) - self.voltage_violation_time
                         break
             if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                self.cvr_control()
+                self.cvr_control(voltage_violation_phases)
                 self.voltage_violation_time = int(timestamp)
         if self.simulation is not None:
             self.simulation.resume()
@@ -404,7 +409,7 @@ class ConservationVoltageReductionController(object):
                             tapStep = 1.0 + (pos_val[0] * regulationPerStep)
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
 
-    def cvr_control(self):
+    def cvr_control(self, phases: str = None):
         capacitor_list = []
         for cap_mrid, cap in self.controllable_capacitors.items():
             cap_meas_dict = self.pos_measurements.get(cap_mrid)
@@ -421,7 +426,7 @@ class ConservationVoltageReductionController(object):
         for psr_mrid, psr_dict in self.controllable_regulators.items():
             tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
             if tapChangersList:
-                regulator_list.append((psr_mrid, deepcopy(tapChangersList)))
+                regulator_list.append((psr_mrid, deepcopy(tapChangersList), phases))
         if not (capacitor_list or regulator_list):
             return
         meas_list = []
@@ -449,7 +454,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    self.increase_voltage_regulator()
+                    self.desired_setpoint.update(self.increase_voltage_regulator(regulator_list))
 
         # FIXMEOr: Check the update_opendss_with_measurements function.
 
@@ -537,10 +542,14 @@ class ConservationVoltageReductionController(object):
         while reg_list and not success:
             element_tuple = reg_list.pop(0)
             psr_mrid = element_tuple[0]
+            phases = element_tuple[2]
             for i in range(tap_budget):
                 if success:
                     break
                 for rtp in element_tuple[1]:
+                    rtpPhases = getRatioTapChangerPhases(rtp)
+                    if rtpPhases not in phases and phases not in rtpPhases:
+                        continue
                     if success:
                         break
                     xfmrEnd = rtp.TransformerEnd
@@ -618,6 +627,21 @@ class ConservationVoltageReductionController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def getRatioTapChangerPhases(ratioTapChanger) -> str:
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('getRatioTapChanger(): Argument ratioTapChanger must be an instance of cim.RatioTapChanger!')
+    phases = None
+    transformerEnd = ratioTapChanger.TransformerEnd
+    if isinstance(transformerEnd, cim.PowerTransformerEnd):
+        phases = cim.PhaseCode.ABC.value
+    elif isinstance(transformerEnd, cim.TransformerTankEnd):
+        phases = transformerEnd.phases.value
+    if phases is None:
+        raise ValueError('getRatioTapChanger(): The TransformerEnd associated with the RatioTapChanger is expected to '
+                         'be an instance of PowerTransformerEnd or TransformerTankEnd!')
+    return phases
 
 
 def tapPositionToTapRatio(tapPosition: int, ratioTapChanger) -> float:
