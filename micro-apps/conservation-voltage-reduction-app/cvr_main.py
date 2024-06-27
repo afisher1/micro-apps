@@ -450,7 +450,7 @@ class ConservationVoltageReductionController(object):
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
                 if regulator_list:
-                    print()
+                    self.desired_setpoint.update(self.decrease_voltage_regulator(regulator_list))
             else:
                 if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
@@ -547,7 +547,6 @@ class ConservationVoltageReductionController(object):
         while reg_list:
             element_tuple = reg_list.pop(0)
             psr_mrid = element_tuple[0]
-            phases = element_tuple[2]
             oldSetpointRatio = [None] * len(element_tuple[1])
             newSetpointRatio = [None] * len(element_tuple[1])
             stopDecrease = False
