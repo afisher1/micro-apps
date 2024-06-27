@@ -535,24 +535,22 @@ class ConservationVoltageReductionController(object):
         print(f'return_dict length: {len(return_dict)}')
         return return_dict
 
-    def increase_voltage_regulator(self, reg_list: list) -> dict:
+    def decrease_voltage_regulator(self, reg_list: list) -> dict:
         tap_budget = 5
         return_dict = {}
-        success = False
-        while reg_list and not success:
+        while reg_list:
             element_tuple = reg_list.pop(0)
             psr_mrid = element_tuple[0]
             phases = element_tuple[2]
+            oldSetpointRatio = [None] * len(element_tuple[1])
+            stopDecrease = False
             for i in range(tap_budget):
-                if success:
+                if stopDecrease:
                     break
-                for rtp in element_tuple[1]:
-                    rtpPhases = getRatioTapChangerPhases(rtp)
-                    if rtpPhases not in phases and phases not in rtpPhases:
-                        continue
-                    if success:
-                        break
+                for j in range(len(element_tuple[1])):
+                    rtp = element_tuple[1][j]
                     xfmrEnd = rtp.TransformerEnd
+                    rtpName = ''
                     if isinstance(xfmrEnd, cim.PowerTransformerEnd):
                         rtpName = xfmrEnd.PowerTransformer.name
                     elif isinstance(xfmrEnd, cim.TransformerTankEnd):
@@ -566,9 +564,72 @@ class ConservationVoltageReductionController(object):
                     if reg:
                         self.dssContext.Transformers.Wdg(2)
                         if i == 0:
-                            oldSetpointRatio = self.dssContext.Transformers.Tap()
+                            oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
+                        minTapRatio = self.dssContext.Transformers.MinTap()
+                        rtpCurrentTap = oldSetpointRatio[j]
+                        tapStep = float(rtp.step)
+                        if rtpCurrentTap <= minTapRatio:
+                            break
+                        self.dssContext.Transformers.Tap(rtpCurrentTap - tapStep)
+                        self.dssContext.Solution.SolveNoControl()
+                        converged = self.dssContext.Solution.Converged()
+                        if converged:
+                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+
+                            if rtp.mRID not in return_dict.keys():
+                                return_dict[rtp.mRID] = {
+                                    'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
+                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
+                                    'object': rtp
+                                }
+                            else:
+                                return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp)
+                            rtpCurrentTap = rtpCurrentTap + tapStep
+                            if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                                print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                                success = True
+                                break
+                        else:
+                            self.dssContext.Transformers.Tap(rtpCurrentTap)
+                            break
+
+    def increase_voltage_regulator(self, reg_list: list) -> dict:
+        tap_budget = 5
+        return_dict = {}
+        success = False
+        while reg_list and not success:
+            element_tuple = reg_list.pop(0)
+            psr_mrid = element_tuple[0]
+            phases = element_tuple[2]
+            oldSetpointRatio = [None] * len(element_tuple[1])
+            for i in range(tap_budget):
+                if success:
+                    break
+                for j in range(len(element_tuple[1])):
+                    rtp = element_tuple[1][j]
+                    rtpPhases = getRatioTapChangerPhases(rtp)
+                    if not (rtpPhases in phases or phases in rtpPhases):
+                        continue
+                    if success:
+                        break
+                    xfmrEnd = rtp.TransformerEnd
+                    rtpName = ''
+                    if isinstance(xfmrEnd, cim.PowerTransformerEnd):
+                        rtpName = xfmrEnd.PowerTransformer.name
+                    elif isinstance(xfmrEnd, cim.TransformerTankEnd):
+                        rtpName = xfmrEnd.TransformerTank.name
+                    reg = self.dssContext.Transformers.First()
+                    while reg:
+                        if self.dssContext.Transformers.Name() == rtpName:
+                            break
+                        else:
+                            reg = self.dssContext.Transformers.Next()
+                    if reg:
+                        self.dssContext.Transformers.Wdg(2)
+                        if i == 0:
+                            oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
                         maxTapRatio = self.dssContext.Transformers.MaxTap()
-                        rtpCurrentTap = oldSetpointRatio
+                        rtpCurrentTap = oldSetpointRatio[j]
                         tapStep = float(rtp.step)
                         if rtpCurrentTap >= maxTapRatio:
                             break
@@ -580,7 +641,7 @@ class ConservationVoltageReductionController(object):
                             if rtp.mRID not in return_dict.keys():
                                 return_dict[rtp.mRID] = {
                                     'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
-                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio, rtp),
+                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
                                     'object': rtp
                                 }
                             else:
