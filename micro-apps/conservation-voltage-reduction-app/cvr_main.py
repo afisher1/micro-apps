@@ -3,7 +3,7 @@ import math
 import os
 from argparse import ArgumentParser
 from datetime import datetime
-from typing import Any, Dict, Union
+from typing import Any, Dict
 from uuid import uuid4
 
 import cimgraph.utils as cimUtils
@@ -306,7 +306,7 @@ class ConservationVoltageReductionController(object):
                             print(f'meas_term.ConductingEquipment.BaseVoltage is None')
                     else:
                         print(f'meas_term.ConductingEquipment is None')
-            print(f'base voltage is {meas_base}V')
+            # print(f'base voltage is {meas_base}V')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
                 print('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
