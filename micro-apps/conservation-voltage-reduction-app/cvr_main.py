@@ -251,8 +251,14 @@ class ConservationVoltageReductionController(object):
                             self.voltage_violation_time = int(timestamp)
                             meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
                             if isinstance(meas, cim.Measurement):
-                                if meas.phases.value not in voltage_violation_phases:
-                                    voltage_violation_phases += meas.phases.value
+                                measPhase = meas.phases
+                                if measPhase in [
+                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                ]:
+                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                if measPhase.value not in voltage_violation_phases:
+                                    voltage_violation_phases += measPhase.value
                         else:
                             total_violation_time = int(timestamp) - self.voltage_violation_time
                         break
@@ -543,6 +549,7 @@ class ConservationVoltageReductionController(object):
             psr_mrid = element_tuple[0]
             phases = element_tuple[2]
             oldSetpointRatio = [None] * len(element_tuple[1])
+            newSetpointRatio = [None] * len(element_tuple[1])
             stopDecrease = False
             for i in range(tap_budget):
                 if stopDecrease:
@@ -565,8 +572,9 @@ class ConservationVoltageReductionController(object):
                         self.dssContext.Transformers.Wdg(2)
                         if i == 0:
                             oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
+                            newSetpointRatio[j] = oldSetpointRatio[j]
                         minTapRatio = self.dssContext.Transformers.MinTap()
-                        rtpCurrentTap = oldSetpointRatio[j]
+                        rtpCurrentTap = newSetpointRatio[j]
                         tapStep = float(rtp.step)
                         if rtpCurrentTap <= minTapRatio:
                             break
@@ -575,23 +583,25 @@ class ConservationVoltageReductionController(object):
                         converged = self.dssContext.Solution.Converged()
                         if converged:
                             print(f'Powerflow converged when modifying regulator {psr_mrid}.')
-
-                            if rtp.mRID not in return_dict.keys():
-                                return_dict[rtp.mRID] = {
-                                    'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
-                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
-                                    'object': rtp
-                                }
-                            else:
-                                return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp)
-                            rtpCurrentTap = rtpCurrentTap + tapStep
                             if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                                print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
-                                success = True
-                                break
+                                print(f'modifying regulator {psr_mrid} did not cause a voltage violation.')
+                                if rtp.mRID not in return_dict.keys():
+                                    return_dict[rtp.mRID] = {
+                                        'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
+                                        'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
+                                        'object': rtp
+                                    }
+                                else:
+                                    return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(
+                                        rtpCurrentTap + tapStep, rtp)
+                                rtpCurrentTap = rtpCurrentTap + tapStep
+                                newSetpointRatio[j] = rtpCurrentTap
+                            else:
+                                self.dssContext.Transformer.Tap(newSetpointRatio[j])
                         else:
-                            self.dssContext.Transformers.Tap(rtpCurrentTap)
+                            self.dssContext.Transformer.Tap(newSetpointRatio[j])
                             break
+        return return_dict
 
     def increase_voltage_regulator(self, reg_list: list) -> dict:
         tap_budget = 5
@@ -602,6 +612,7 @@ class ConservationVoltageReductionController(object):
             psr_mrid = element_tuple[0]
             phases = element_tuple[2]
             oldSetpointRatio = [None] * len(element_tuple[1])
+            newSetpointRatio = [None] * len(element_tuple[1])
             for i in range(tap_budget):
                 if success:
                     break
@@ -628,8 +639,9 @@ class ConservationVoltageReductionController(object):
                         self.dssContext.Transformers.Wdg(2)
                         if i == 0:
                             oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
+                            newSetpointRatio[j] = oldSetpointRatio[j]
                         maxTapRatio = self.dssContext.Transformers.MaxTap()
-                        rtpCurrentTap = oldSetpointRatio[j]
+                        rtpCurrentTap = newSetpointRatio[j]
                         tapStep = float(rtp.step)
                         if rtpCurrentTap >= maxTapRatio:
                             break
@@ -647,6 +659,7 @@ class ConservationVoltageReductionController(object):
                             else:
                                 return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp)
                             rtpCurrentTap = rtpCurrentTap + tapStep
+                            newSetpointRatio[j] = rtpCurrentTap
                             if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
                                 print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
                                 success = True
@@ -688,6 +701,53 @@ class ConservationVoltageReductionController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def findPrimaryPhase(cimObj):
+    '''
+        Helper function for finding the primary phase an instance of cim.ConductingEquipment on the secondary
+        system is connected to.
+    '''
+    if not isinstance(cimObj, cim.ConductingEquipment):
+        raise TypeError('findPrimaryPhase(): cimObj must be an instance of cim.ConductingEquipment!')
+    equipmentToCheck = [cimObj]
+    phaseCode = None
+    xfmr = None
+    i = 0
+    while not xfmr and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            if isinstance(eq, cim.PowerTransformer):
+                xfmr = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not xfmr:
+        raise RuntimeError('findPrimaryPhase(): no upstream centertapped transformer could be found for secondary '
+                           f'system object {cimObj.name}!')
+    for tank in xfmr.TransformerTanks:
+        if phaseCode is not None:
+            break
+        for tankEnd in tank.TransformerTankEnds:
+            if tankEnd.phases not in [
+                    cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
+                    cim.PhaseCode.s2, cim.PhaseCode.s2N
+            ]:
+                phaseCode = tankEnd.phases
+                break
+    if not phaseCode:
+        raise RuntimeError('findPrimaryPhase(): the upstream centertapped transformer has no primary phase defined!?')
+    return phaseCode
 
 
 def getRatioTapChangerPhases(ratioTapChanger) -> str:
