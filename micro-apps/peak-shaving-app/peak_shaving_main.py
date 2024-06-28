@@ -105,7 +105,6 @@ class PeakShavingController(object):
         self.installed_battery_power_B = 0.0
         self.installed_battery_power_C = 0.0
         self.configureBatteryProperties()
-        # Store measurements of feeder head load, battery output and state of charge.
         # print(measurements.keys())
         if peak_setpoint is not None:
             self.peak_setpoint_A = peak_setpoint / 3.0
@@ -113,7 +112,7 @@ class PeakShavingController(object):
             self.peak_setpoint_C = peak_setpoint / 3.0
         else:
             self.configurePeakShavingSetpoint()
-            self.findFeederHeadLoadMeasurements()
+        self.findFeederHeadLoadMeasurements()
         if self.simulation is not None:
             self.simulation.start_simulation()
 
@@ -354,13 +353,16 @@ class PeakShavingController(object):
             feederTransformer = findFeederTransformer(source)
             transformerMeasurements = feederTransformer.Measurements
             for measurement in transformerMeasurements:
-                if measurement.measurementType == 'VA':
+                if measurement.measurementType == 'VA' and int(measurement.Terminal.sequenceNumber) == 1:
                     if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
                         self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
                     elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
                         self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
                     elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
                         self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
+        if not self.peak_va_measurements_A or self.peak_va_measurements_B or self.peak_va_measurements_C:
+            raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
+                               'feeder head transformer!')
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
@@ -381,15 +383,23 @@ class PeakShavingController(object):
             measurement = measurements.get(self.controllable_batteries_A[mrid]['power_measuremnt']['object'].mRID)
             if measurement is not None:
                 self.controllable_batteries_A[mrid]['power_measuremnt']['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_A[mrid]['soc_measuremnt']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_A[mrid]['soc_measuremnt']['value'] = measurement
         for mrid in self.controllable_batteries_B.keys():
             measurement = measurements.get(self.controllable_batteries_B[mrid]['power_measuremnt']['object'].mRID)
             if measurement is not None:
                 self.controllable_batteries_B[mrid]['power_measuremnt']['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_B[mrid]['soc_measuremnt']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_B[mrid]['soc_measuremnt']['value'] = measurement
         for mrid in self.controllable_batteries_C.keys():
             measurement = measurements.get(self.controllable_batteries_C[mrid]['power_measuremnt']['object'].mRID)
             if measurement is not None:
                 self.controllable_batteries_C[mrid]['power_measuremnt']['value'] = measurement
-
+            measurement = measurements.get(self.controllable_batteries_C[mrid]['soc_measuremnt']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_C[mrid]['soc_measuremnt']['value'] = measurement
         self.peak_shaving_control()
         if self.simulation is not None:
             self.simulation.resume()
@@ -411,28 +421,12 @@ class PeakShavingController(object):
             cimObj = dictVal.get('object')
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
-            if isinstance(cimObj, cim.LinearShuntCompensator):
-                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
-                                                      int(not newSetpoint[0]))
-            elif isinstance(cimObj, cim.PowerTransformer):
-                tapChangersList = self.controllable_regulators.get(mrid, {}).get('RatioTapChangers', [])
-                currentTapPositions = self.pos_measurements.get(mrid, {})
-                for rtp in tapChangersList:
-                    phases = rtp.TransformerEnd.phases
-                    for measurement_object in currentTapPositions.get('measurement_objects', {}).values():
-                        if measurement_object.phases == phases:
-                            currentSetpoint = currentTapPositions.get('measurement_values',
-                                                                      {}).get(measurement_object.mRID, {}).get('value')
-                            if not currentSetpoint:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, 'NA')
-                            else:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint,
-                                                                      currentSetpoint)
-                            break
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
             else:
-                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
-                                 f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
-                                 'sending a setpoint to this object.')
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
         setpointMessage = self.differenceBuilder.get_message()
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
@@ -440,10 +434,6 @@ class PeakShavingController(object):
         self.log.info(f'Simulation for PeakShavingController:{self.id} has finished. This application '
                       'instance can be deleted.')
         self.isValid = False
-
-    def __del__(self):
-        directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
-        removeDirectory(directoryToDelete)
 
 
 def findMeasurement(measurementsList, type: str, phases):
@@ -542,6 +532,43 @@ def findFeederPowerRating(cimObj):
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
     return feederPowerRating
+
+
+def findFeederTransformer(cimObj):
+    '''
+        Helper function to find feeder transformer
+    '''
+    if not isinstance(cimObj, cim.EnergySource):
+        raise TypeError('findFeederTransformer(): cimObj must be an instance of cim.EnergySource!')
+    equipmentToCheck = [cimObj]
+    xfmr = None
+    feederPowerRating = None
+    i = 0
+    while not xfmr and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            if isinstance(eq, cim.PowerTransformer):
+                xfmr = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not xfmr:
+        raise RuntimeError('findFeederPowerRating(): No feeder head transformer could be found for EnergySource, '
+                           f'{cimObj.name}!')
+    powerTransformerEnds = xfmr.PowerTransformerEnd
+    if not powerTransformerEnds:
+        raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
+    return xfmr
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
