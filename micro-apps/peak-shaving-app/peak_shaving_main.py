@@ -415,6 +415,54 @@ class PeakShavingController(object):
         if self.desired_setpoints:
             self.send_setpoints()
 
+    def get_load_minus_batteries(self):
+        load_A = 0
+        load_B = 0
+        load_C = 0
+        for xfmr_id in self.peak_va_measurements_A.keys():
+            measurement = self.peak_va_measurements_A[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_A += mag * math.cos(math.radians(ang_in_deg))
+        for batt_id in self.controllable_batteries_A.keys():
+            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_A -= mag * math.cos(math.radians(ang_in_deg))
+        for xfmr_id in self.peak_va_measurements_B.keys():
+            measurement = self.peak_va_measurements_B[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_B += mag * math.cos(math.radians(ang_in_deg))
+        for batt_id in self.controllable_batteries_B.keys():
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_B -= mag * math.cos(math.radians(ang_in_deg))
+        for xfmr_id in self.peak_va_measurements_C.keys():
+            measurement = self.peak_va_measurements_C[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_C += mag * math.cos(math.radians(ang_in_deg))
+        for batt_id in self.controllable_batteries_C.keys():
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_C -= mag * math.cos(math.radians(ang_in_deg))
+        return (load_A, load_B, load_C)
+
     def send_setpoints(self):
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
