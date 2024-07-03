@@ -380,26 +380,26 @@ class PeakShavingController(object):
             if measurement is not None:
                 self.peak_va_measurements_C[mrid]['value'] = measurement
         for mrid in self.controllable_batteries_A.keys():
-            measurement = measurements.get(self.controllable_batteries_A[mrid]['power_measuremnt']['object'].mRID)
+            measurement = measurements.get(self.controllable_batteries_A[mrid]['power_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_A[mrid]['power_measuremnt']['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_A[mrid]['soc_measuremnt']['object'].mRID)
+                self.controllable_batteries_A[mrid]['power_measurement']['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_A[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_A[mrid]['soc_measuremnt']['value'] = measurement
+                self.controllable_batteries_A[mrid]['soc_measurement']['value'] = measurement
         for mrid in self.controllable_batteries_B.keys():
-            measurement = measurements.get(self.controllable_batteries_B[mrid]['power_measuremnt']['object'].mRID)
+            measurement = measurements.get(self.controllable_batteries_B[mrid]['power_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_B[mrid]['power_measuremnt']['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_B[mrid]['soc_measuremnt']['object'].mRID)
+                self.controllable_batteries_B[mrid]['power_measurement']['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_B[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_B[mrid]['soc_measuremnt']['value'] = measurement
+                self.controllable_batteries_B[mrid]['soc_measurement']['value'] = measurement
         for mrid in self.controllable_batteries_C.keys():
-            measurement = measurements.get(self.controllable_batteries_C[mrid]['power_measuremnt']['object'].mRID)
+            measurement = measurements.get(self.controllable_batteries_C[mrid]['power_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_C[mrid]['power_measuremnt']['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_C[mrid]['soc_measuremnt']['object'].mRID)
+                self.controllable_batteries_C[mrid]['power_measurement']['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_C[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_C[mrid]['soc_measuremnt']['value'] = measurement
+                self.controllable_batteries_C[mrid]['soc_measurement']['value'] = measurement
         self.peak_shaving_control()
         if self.simulation is not None:
             self.simulation.resume()
