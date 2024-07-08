@@ -494,6 +494,68 @@ class PeakShavingController(object):
             }
         return return_dict
 
+    def calc_batt_charge_B(self, power_to_charge_B, upper_limit):
+        return_dict = {}
+        available_capacity_B = self.installed_battery_power_B
+        for batt_id in self.controllable_batteries_B.keys():
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+        for batt_id in self.controllable_batteries_B.keys():
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    continue
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                break
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                break
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            new_power = (power_to_charge_B /
+                         available_capacity_B) * self.controllable_batteries_B[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_B[batt_id]['maximum_power'])
+            return_dict[batt_id] = {
+                'object': self.controllable_batteries_B['object'],
+                'old_setpoint': current_power,
+                'setpoint': new_power
+            }
+        return return_dict
+
+    def calc_batt_charge_C(self, power_to_charge_C, upper_limit):
+        return_dict = {}
+        available_capacity_C = self.installed_battery_power_C
+        for batt_id in self.controllable_batteries_C.keys():
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+        for batt_id in self.controllable_batteries_C.keys():
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    continue
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                break
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                break
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            new_power = (power_to_charge_C /
+                         available_capacity_C) * self.controllable_batteries_C[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_C[batt_id]['maximum_power'])
+            return_dict[batt_id] = {
+                'object': self.controllable_batteries_C['object'],
+                'old_setpoint': current_power,
+                'setpoint': new_power
+            }
+        return return_dict
+
     def send_setpoints(self):
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
