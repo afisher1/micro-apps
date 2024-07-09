@@ -365,7 +365,9 @@ class PeakShavingController(object):
                                'feeder head transformer!')
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
-        self.desired_setpoints.clear()
+        self.desired_setpoints['A'].clear()
+        self.desired_setpoints['B'].clear()
+        self.desired_setpoints['C'].clear()
         #TODO: update measurements
         for mrid in self.peak_va_measurements_A.keys():
             measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
