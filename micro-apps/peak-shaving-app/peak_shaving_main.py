@@ -64,7 +64,7 @@ class PeakShavingController(object):
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
         self.id = uuid4()
-        self.desired_setpoints = {}
+        self.desired_setpoints = {'A': {}, 'B': {}, 'C': {}}
         self.controllable_batteries_A = {}
         self.controllable_batteries_B = {}
         self.controllable_batteries_C = {}
@@ -558,10 +558,95 @@ class PeakShavingController(object):
 
     def send_setpoints(self):
         self.differenceBuilder.clear()
-        for mrid, dictVal in self.desired_setpoints.items():
+        mrids_phase_A = set(self.desired_setpoints['A'].keys())
+        mrids_phase_B = set(self.desired_setpoints['B'].keys())
+        mrids_phase_C = set(self.desired_setpoints['C'].keys())
+        mrids_phase_AB = (mrids_phase_A.intersection(mrids_phase_B)).symmetric_difference_update(mrids_phase_C)
+        mrids_phase_BC = (mrids_phase_B.intersection(mrids_phase_C)).symmetric_difference_update(mrids_phase_A)
+        mrids_phase_AC = (mrids_phase_A.intersection(mrids_phase_C)).symmetric_difference_update(mrids_phase_B)
+        mrids_phase_ABC = (mrids_phase_A.intersection(mrids_phase_B)).intersection(mrids_phase_C)
+        mrids_phase_A.symmetric_difference_update(mrids_phase_B)
+        mrids_phase_A.symmetric_difference_update(mrids_phase_C)
+        mrids_phase_B.symmetric_difference_update(mrids_phase_A)
+        mrids_phase_B.symmetric_difference_update(mrids_phase_C)
+        mrids_phase_C.symmetric_difference_update(mrids_phase_B)
+        mrids_phase_C.symmetric_difference_update(mrids_phase_A)
+        for mrid in mrids_phase_A:
+            dictVal = self.desired_setpoints['A'].get(mrid, {})
             cimObj = dictVal.get('object')
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_B:
+            dictVal = self.desired_setpoints['B'].get(mrid, {})
+            cimObj = dictVal.get('object')
+            newSetpoint = dictVal.get('setpoint')
+            oldSetpoint = dictVal.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_C:
+            dictVal = self.desired_setpoints['C'].get(mrid, {})
+            cimObj = dictVal.get('object')
+            newSetpoint = dictVal.get('setpoint')
+            oldSetpoint = dictVal.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_AB:
+            dictValA = self.desired_setpoints['A'].get(mrid, {})
+            dictValB = self.desired_setpoints['B'].get(mrid, {})
+            cimObj = dictValA.get('object')
+            newSetpoint = dictValA.get('setpoint') + dictValB.get('setpoint')
+            oldSetpoint = dictValA.get('old_setpoint') + dictValB.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_BC:
+            dictValC = self.desired_setpoints['C'].get(mrid, {})
+            dictValB = self.desired_setpoints['B'].get(mrid, {})
+            cimObj = dictValC.get('object')
+            newSetpoint = dictValC.get('setpoint') + dictValB.get('setpoint')
+            oldSetpoint = dictValC.get('old_setpoint') + dictValB.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_AC:
+            dictValA = self.desired_setpoints['A'].get(mrid, {})
+            dictValC = self.desired_setpoints['C'].get(mrid, {})
+            cimObj = dictValA.get('object')
+            newSetpoint = dictValA.get('setpoint') + dictValC.get('setpoint')
+            oldSetpoint = dictValA.get('old_setpoint') + dictValC.get('old_setpoint')
+            if isinstance(cimObj, cim.PowerElectronicsConnection):
+                self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+            else:
+                self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
+                                 f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
+                                 'object.')
+        for mrid in mrids_phase_ABC:
+            dictValA = self.desired_setpoints['A'].get(mrid, {})
+            dictValB = self.desired_setpoints['B'].get(mrid, {})
+            dictValC = self.desired_setpoints['C'].get(mrid, {})
+            cimObj = dictValA.get('object')
+            newSetpoint = dictValA.get('setpoint') + dictValB.get('setpoint') + dictValC.get('setpoint')
+            oldSetpoint = dictValA.get('old_setpoint') + dictValB.get('old_setpoint') + dictValC.get('old_setpoint')
             if isinstance(cimObj, cim.PowerElectronicsConnection):
                 self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
             else:
