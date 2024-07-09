@@ -412,9 +412,33 @@ class PeakShavingController(object):
         self.on_measurement(None, timestamp, measurements)
 
     def peak_shaving_control(self):
-        self.desired_setpoints = {}
-
-        if self.desired_setpoints:
+        lower_limit = 0.2
+        upper_limit = 0.8
+        real_load_A, real_load_B, real_load_C = self.get_load_minus_batteries()
+        if real_load_A > self.peak_setpoint_A:
+            power_diff_A = real_load_A - self.peak_setpoint_A
+            self.desired_setpoints['A'].update(self.calc_batt_discharge_A(power_diff_A, lower_limit))
+        elif real_load_A < self.bottom_setpoint_A:
+            power_diff_A = self.peak_setpoint_A - real_load_A
+            self.desired_setpoints['A'].update(self.calc_batt_charge_A(power_diff_A, upper_limit))
+        else:
+            for batt_id in self.controllable_batteries_A.keys():
+                measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+                if measurement is None:
+                    continue
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    continue
+                current_power = mag * math.cos(math.radians(ang_in_deg))
+                new_power = 0.0
+                if abs(new_power - current_power) > 1e-3:
+                    self.desired_setpoints['A'][batt_id] = {
+                        'object': self.controllable_batteries_A['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': new_power
+                    }
+        if self.desired_setpoints['A'] or self.desired_setpoints['B'] or self.desired_setpoints['C']:
             self.send_setpoints()
 
     def get_load_minus_batteries(self):
