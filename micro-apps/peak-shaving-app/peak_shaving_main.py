@@ -465,6 +465,52 @@ class PeakShavingController(object):
                     load_C -= mag * math.cos(math.radians(ang_in_deg))
         return (load_A, load_B, load_C)
 
+    def calc_batt_discharge_A(self, power_to_discharge_A, lower_limit):
+        if not isinstance(power_to_discharge_A, float):
+            raise TypeError('calc_batt_discharge_A(): power_to_discharge_A must be an instance of float!')
+        if power_to_discharge_A >= 0.0:
+            raise ValueError(f'calc_batt_discharge_A(): power_to_discharge_A must be nonnegative!')
+        if not isinstance(lower_limit, float):
+            raise TypeError('calc_batt_discharge_A(): lower_limit must be an instance of float!')
+        if (lower_limit > 1.0) or (lower_limit < 0.0):
+            raise ValueError(f'calc_batt_discharge_A(): lower_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        available_capacity_A = self.installed_battery_power_A
+        for batt_id in self.controllable_batteries_A.keys():
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc < lower_limit:
+                    available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+            else:
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+        if available_capacity_A < 0.0:
+            return return_dict
+        for batt_id in self.controllable_batteries_A.keys():
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc < lower_limit:
+                    continue
+            else:
+                continue
+            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            new_power = (power_to_discharge_A /
+                         available_capacity_A) * self.controllable_batteries_A[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_A[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-3:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_A['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': new_power
+                }
+        return return_dict
+
     def calc_batt_charge_A(self, power_to_charge_A, upper_limit):
         if not isinstance(power_to_charge_A, float):
             raise TypeError('calc_batt_charge_A(): power_to_charge_A must be an instance of float!')
