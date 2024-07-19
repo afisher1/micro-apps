@@ -682,7 +682,7 @@ class PeakShavingController(object):
                 measurementObj = measDict.get('object')
                 if (measurement is None) or (measurementObj is None):
                     continue
-                measurementPhase = measurementObj.phase
+                measurementPhase = measurementObj.phases
                 if measurementPhase in [cim.PhaseCode.A, cim.PhaseCode.AN]:
                     mag = measurement.get('magnitude')
                     ang_in_deg = measurement.get('angle')
