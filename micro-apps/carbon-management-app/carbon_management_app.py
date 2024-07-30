@@ -14,6 +14,7 @@ from argparse import ArgumentParser
 import json
 from typing import Dict
 from cimgraph import utils
+from tabulate import tabulate
 from cimgraph.databases import ConnectionParameters, BlazegraphConnection
 from cimgraph.models import FeederModel
 from cimgraph.data_profile.rc4_2021 import EnergyConsumer
@@ -38,22 +39,30 @@ ROOT = os.getcwd()
 
 
 class CarbonManagementApp(object):
-    """CVR Control Class
-        This class implements a centralized algorithm for conservation voltage reduction by controlling regulators and
-        capacitors in the distribution model.
+    """Carbon Management Class
+        This class implements a centralized algorithm for carbon management in a grid by controlling batteries in the distribution model.
 
         Attributes:
-            sim_id: The simulation id that the instance will be perfoming cvr on. If the sim_id is None then the
-                    application will assume it is performing cvr on the actual field devices.
+            sim_id: The simulation id that the instance will be perfoming control on. If the sim_id is None then the
+                    application will assume it is performing control on the actual field devices.
                 Type: str.
                 Default: None.
-            period: The amount of time to wait before calculating new cvr setpoints.
-                Type: int.
+            gad_obj: An instatiated object that is connected to the gridappsd message bus usually this should be the same object which subscribes, but that
+                    isn't required.
+                Type: GridAPPSD.
+                Default: None.
+            model_id: The mrid of the cim model to perform carbon management control on.
+                Type: str.
+                Default: None.
+            simulation: Simulation object of the identified cim model.
+                Type: Simulation.
+                Default: None.
+            network: An instatiated object of knowledge graph class for distribution feeder objects.
+                Type: FeederModel.
                 Default: None.
         Methods:
             initialize(headers:Dict[Any], message:Dict[Any]): This callback function will trigger the application to
-                    read the model database to find all the measurements in the model as well as the controllable
-                    regulators and capacitors in the sytem.
+                    read the model database to find all the measurements in the model as well as batteries in the sytem.
                 Arguments:
                     headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
@@ -63,8 +72,8 @@ class CarbonManagementApp(object):
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
-            enableControl(headers:Dict[Any], message:Dict[Any]): This callback function will tell the application that
-                    it is allowed to perform cvr on the systems or simulations its tied to.
+            on_measurement(headers:Dict[Any], message:Dict[Any]): This callback function will be used to capture the
+              measurements dictionary needed for control.
                 Arguments:
                     headers: A dictionary containing header information on the message received from the GridAPPS-D
                             platform.
@@ -74,40 +83,14 @@ class CarbonManagementApp(object):
                         Type: dictionary.
                         Default: NA.
                 Returns: NA.
-            disableControl(headers:Dict[Any], message:Dict[Any]): This callback function will prevent the application
-                    from performing cvr on the systems or simulations its tied to.
-                Arguments:
-                    headers: A dictionary containing header information on the message received from the GridAPPS-D
-                            platform.
-                        Type: dictionary.
-                        Default: NA.
-                    message: A dictionary containing the message received from the GridAPPS-D platform.
-                        Type: dictionary.
-                        Default: NA.
-                Returns: NA.
-            on_measurement(headers:Dict[Any], message:Dict[Any]): This callback function will be used to update the
-                    applications measurements dictionary needed for cvr control.
-                Arguments:
-                    headers: A dictionary containing header information on the message received from the GridAPPS-D
-                            platform.
-                        Type: dictionary.
-                        Default: NA.
-                    message: A dictionary containing the message received from the GridAPPS-D platform.
-                        Type: dictionary.
-                        Default: NA.
-                Returns: NA.
-            cvr_control(): This is the main function for performing the cvr control.
+            optimize_battery(): This is the main function for controlling the battery.
     """
-    period = 3600
-    lower_voltage_limit_pu = 0.9
-    max_violation_time = 300
+
 
     def __init__(self,
                  gad_obj: GridAPPSD,
                  model_id: str,
                  network: FeederModel,
-                 period: int = None,
-                 low_volt_lim: float = None,
                  sim_id: str = None,
                  simulation: Simulation = None):
         if not isinstance(gad_obj, GridAPPSD):
@@ -116,25 +99,10 @@ class CarbonManagementApp(object):
             raise TypeError(f'model_id must be a str type.')
         if model_id is None or model_id == '':
             raise ValueError(f'model_id must be a valid uuid.')
-        if not isinstance(period, int) and period is not None:
-            raise TypeError(f'period must be an int type or {None}!')
-        if not isinstance(low_volt_lim, float) and period is not None:
-            raise TypeError(f'low_volt_lim must be an float type or {None}!')
         if not isinstance(sim_id, str) and sim_id is not None:
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
-        self.platform_measurements = {}
-        self.last_setpoints = {}
-        self.desired_setpoints = {}
-        self.controllable_regulators = {}
-        self.controllable_capacitors = {}
-        self.pnv_measurements = {}
-        self.pnv_measurements_pu = {}
-        self.va_measurements = {}
-        self.pos_measurements = {}
-        self.measurements_topic = None
-        self.simulation = None
         self.gad_obj = gad_obj
         self.init_batt_dis = True
         self._count = 0
@@ -151,12 +119,12 @@ class CarbonManagementApp(object):
                 if isinstance(unit, BatteryUnit):
                     self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [], 'measurementPhases': []}
                     self.Battery[unit_mrid]['name'] = unit.name
-                    self.Battery[unit_mrid]['ratedS'] = pec.ratedS
-                    self.Battery[unit_mrid]['ratedE'] = unit.ratedE
+                    self.Battery[unit_mrid]['ratedS'] = float(pec.ratedS) / 1000
+                    self.Battery[unit_mrid]['ratedE'] = float(unit.ratedE) / 1000
                 else:
                     self.Solar[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [], 'measurementPhases': []}
                     self.Solar[unit_mrid]['name'] = pec.name
-                    self.Solar[unit_mrid]['ratedS'] = pec.ratedS
+                    self.Solar[unit_mrid]['ratedS'] = float(pec.ratedS) / 1000
             
             if not pec.PowerElectronicsConnectionPhases:
                 if unit_mrid in self.Battery:
@@ -235,40 +203,42 @@ class CarbonManagementApp(object):
                 phi = measurements[object[item]['measurementmRID'][va_idx[0]]]['angle']
                 p, q = self.pol2cart(rho, phi)
                 if self.find_phase(angle) == 'A':
-                    object[item]['P_inj'][0] = 2 * p
-                    object[item]['Q_inj'][0] = 2 * q
-                    object[item]['phases'][0] = 'A'
+                    object[item]['P_inj'][0] = 2 * p / 1000
+                    object[item]['Q_inj'][0] = 2 * q / 1000
+                    object[item]['phases'] = 'A'
                 elif self.find_phase(angle) == 'B':
-                    object[item]['P_inj'][1] = 2 * p
-                    object[item]['Q_inj'][1] = 2 * q
-                    object[item]['phases'][0] = 'B'
+                    object[item]['P_inj'][1] = 2 * p / 1000
+                    object[item]['Q_inj'][1] = 2 * q / 1000
+                    object[item]['phases'] = 'B'
                 else:
-                    object[item]['P_inj'][2] = 2 * p
-                    object[item]['Q_inj'][2] = 2 * q
-                    object[item]['phases'][0] = 'C'
+                    object[item]['P_inj'][2] = 2 * p / 1000
+                    object[item]['Q_inj'][2] = 2 * q / 1000
+                    object[item]['phases'] = 'C'
             elif object[item]['phases'] == 'ABC':
                 for k in range(3):
                     rho = measurements[object[item]['measurementmRID'][va_idx[k]]]['magnitude']
                     phi = measurements[object[item]['measurementmRID'][va_idx[k]]]['angle']
                     p, q = self.pol2cart(rho, phi)
-                    object[item]['P_inj'][k] = p
-                    object[item]['Q_inj'][k] = q
+                    object[item]['P_inj'][k] = p / 1000
+                    object[item]['Q_inj'][k] = q / 1000
             else:
                 rho = measurements[object[item]['measurementmRID'][va_idx[0]]]['magnitude']
                 phi = measurements[object[item]['measurementmRID'][va_idx[0]]]['angle']
                 p, q = self.pol2cart(rho, phi)
                 if object[item]['phases'][0] == 'A':
-                    object[item]['P_inj'][0] = p
-                    object[item]['Q_inj'][0] = q
+                    object[item]['P_inj'][0] = p / 1000
+                    object[item]['Q_inj'][0] = q / 1000
                 elif object[item]['phases'][0] == 'B':
-                    object[item]['P_inj'][1] = p
-                    object[item]['Q_inj'][1] = q
+                    object[item]['P_inj'][1] = p / 1000
+                    object[item]['Q_inj'][1] = q / 1000
                 else:
-                    object[item]['P_inj'][2] = p
-                    object[item]['Q_inj'][2] = q
+                    object[item]['P_inj'][2] = p / 1000
+                    object[item]['Q_inj'][2] = q / 1000
     
     def optimize_battery(self, timestamp):
         # Define optimization variables
+        # self.Battery['_BEF5B281-316C-4EEC-8ACF-5595AC446051']['phases'] = 'ABC'
+        # self.Battery['_9CEAC24C-A5F3-4D90-98E0-F5F057F963EF']['phases'] = 'ABC'
         n_batt = len(self.Battery)
         p_flow_A = cp.Variable(integer=False, name='p_flow_A')
         p_flow_B = cp.Variable(integer=False, name='p_flow_B')
@@ -284,6 +254,13 @@ class CarbonManagementApp(object):
         P_batt_B = cp.Variable(n_batt, integer=False, name='P_batt_B')
         P_batt_C = cp.Variable(n_batt, integer=False, name='P_batt_C')
         deltaT = 0.25
+        n_batt_ABC = 0
+        for batt in self.Battery:
+            if 'ABC' in self.Battery[batt]['phases']:
+                n_batt_ABC += 1
+        # Defining variable to constraint same sign for multiple 3-ph batteries
+        if n_batt_ABC > 0:
+            b = cp.Variable(n_batt_ABC, boolean=True, name='b')
 
         constraints = []
         sum_flow_A, sum_flow_B, sum_flow_C = 0.0, 0.0, 0.0
@@ -295,8 +272,9 @@ class CarbonManagementApp(object):
             sum_flow_A += self.EnergyConsumer[load]['P_inj'][0]
             sum_flow_B += self.EnergyConsumer[load]['P_inj'][1]
             sum_flow_C += self.EnergyConsumer[load]['P_inj'][2]
-        print(f'Substation flow without optimization at {timestamp}: ', sum_flow_A, sum_flow_B, sum_flow_C)
+
         idx = 0
+        idx_b = 0
         # For now, we assume battery to be 100% efficient. Need to rewrite the soc constraints if using different efficiency
         for batt in self.Battery:
             constraints.append(soc[idx] == self.Battery[batt]['soc'] / 100 + p_batt[idx] * deltaT / self.Battery[batt]['ratedE'])
@@ -310,6 +288,9 @@ class CarbonManagementApp(object):
                 constraints.append(P_batt_A[idx] == p_batt[idx] / 3)
                 constraints.append(P_batt_B[idx] == p_batt[idx] / 3)
                 constraints.append(P_batt_C[idx] == p_batt[idx] / 3)
+                constraints.append(p_batt[idx] >= - b[idx_b] * self.Battery[batt]['ratedS'])
+                constraints.append(p_batt[idx] <= self.Battery[batt]['ratedS'] * (1 - b[idx_b]))
+                idx_b += 1
             else:
                 if 'A' in self.Battery[batt]['phases']:
                     constraints.append(P_batt_A[idx] == p_batt[idx])
@@ -324,6 +305,10 @@ class CarbonManagementApp(object):
                     constraints.append(P_batt_B[idx] == 0.0)
                     constraints.append(P_batt_C[idx] == p_batt[idx])
             idx += 1
+        # Ensuring three phase batteries have the same sign. We don't want one charging and another discharging
+        # Although, mathematically it might sound correct, it is not worth to do such dispatch.
+        for k in range(n_batt_ABC - 1):
+            constraints.append(b[k] == b[k + 1])
         
         # Constraints for flow in phase ABC
         constraints.append(p_flow_A == sum_flow_A + sum(P_batt_A[k] for k in range(n_batt)))
@@ -335,7 +320,7 @@ class CarbonManagementApp(object):
         constraints.append(p_flow_mod_A >= - p_flow_A)
 
         constraints.append(p_flow_mod_B >= p_flow_B)
-        constraints.append(p_flow_mod_B >= - p_flow_B )
+        constraints.append(p_flow_mod_B >= - p_flow_B)
 
         constraints.append(p_flow_mod_C >= p_flow_C)
         constraints.append(p_flow_mod_C >= - p_flow_C)
@@ -344,35 +329,45 @@ class CarbonManagementApp(object):
         objective = (p_flow_mod_A + p_flow_mod_B + p_flow_mod_C) 
         problem = cp.Problem(cp.Minimize(objective), constraints)
         problem.solve()
-
-        print('Optimization status:', problem.status, flush=True)
-        print('Substaton flow after optimization: ', p_flow_mod_A.value, p_flow_mod_B.value, p_flow_mod_C.value)
-        print('Objective Function: ', problem.value)
-
+        
+        # Extract optimization solution
         idx = 0
         dispatch_batteries = {}
+        optimization_solution_table = []
         for batt in self.Battery:
             name = self.Battery[batt]['name']
-            print(f'{name} dispatch and SOC: ', p_batt[idx].value, soc[idx].value,  P_batt_A[idx].value, P_batt_B[idx].value, P_batt_C[idx].value)
+            # print(f'{name} dispatch and SOC: ', p_batt[idx].value, soc[idx].value,  P_batt_A[idx].value, P_batt_B[idx].value, P_batt_C[idx].value)
             dispatch_batteries[batt] = {}
-            dispatch_batteries[batt]['p_batt'] =  p_batt[idx].value
+            dispatch_batteries[batt]['p_batt'] =  p_batt[idx].value * 1000
+            optimization_solution_table.append([name, self.Battery[batt]['phases'], p_batt[idx].value])
             idx += 1
-        
+        print('Optimization Solution')
+        print(tabulate(optimization_solution_table, headers=['Battery', 'phases', 'P_batt (kW)'], tablefmt='psql'))
+        # "{:.3f}".format(9.999) 
+        load_pv = ['{:.3f}'.format(sum_flow_A), '{:.3f}'.format(sum_flow_B), '{:.3f}'.format(sum_flow_C)]
+        load_pv_batt = ['{:.3f}'.format(p_flow_A.value), '{:.3f}'.format(p_flow_B.value), '{:.3f}'.format(p_flow_C.value)]
+        optimization_summary = []
+        optimization_summary.append([load_pv, load_pv_batt, problem.status])
+        print(tabulate(optimization_summary, headers=['Load + PV', 'Load + PV + Batt', 'Status'], tablefmt='psql'))
         return dispatch_batteries
 
 
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
-        # print(timestamp)
         if self._count % 10 == 0:
             # Call function to extract simulation measurements from injection sources
             self.find_injection(self.Battery, measurements)
             self.find_injection(self.EnergyConsumer, measurements)
             self.find_injection(self.Solar, measurements)
 
-            # Check injection from measurements
+            # Display real-time battery injection and current SOC from measurements
+            simulation_table_batteries = []
             for batt in self.Battery:
-                print(batt, self.Battery[batt]['name'], self.Battery[batt]['P_inj'], self.Battery[batt]['soc'])
-            print('........')
+                name = self.Battery[batt]['name']
+                phases = self.Battery[batt]['phases']
+                simulation_table_batteries.append([name, phases, self.Battery[batt]['P_inj'], self.Battery[batt]['soc']])
+            print(f'\n.......Curren timestamp: {timestamp}.......\n')
+            print('Simulation Table')
+            print(tabulate(simulation_table_batteries, headers=['Battery', 'phases', 'P_batt (kW)', 'SOC'], tablefmt='psql'))
 
             # Invoke optimization for given grid condition
             dispatch_values = self.optimize_battery(timestamp)
@@ -536,6 +531,6 @@ if __name__ == "__main__":
                         action='store_true',
                         help='Flag to disable control on startup by default.')
     args = parser.parse_args()
-    args.start_simulations = True
-    args.model_id = '_EE71F6C9-56F0-4167-A14E-7F4C71F10EAA'
+    # args.start_simulations = True
+    # args.model_id = '_EE71F6C9-56F0-4167-A14E-7F4C71F10EAA'
     main(args.disable_control, args.start_simulations, args.model_id)
