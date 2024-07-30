@@ -237,8 +237,6 @@ class CarbonManagementApp(object):
     
     def optimize_battery(self, timestamp):
         # Define optimization variables
-        # self.Battery['_BEF5B281-316C-4EEC-8ACF-5595AC446051']['phases'] = 'ABC'
-        # self.Battery['_9CEAC24C-A5F3-4D90-98E0-F5F057F963EF']['phases'] = 'ABC'
         n_batt = len(self.Battery)
         p_flow_A = cp.Variable(integer=False, name='p_flow_A')
         p_flow_B = cp.Variable(integer=False, name='p_flow_B')
@@ -336,19 +334,18 @@ class CarbonManagementApp(object):
         optimization_solution_table = []
         for batt in self.Battery:
             name = self.Battery[batt]['name']
-            # print(f'{name} dispatch and SOC: ', p_batt[idx].value, soc[idx].value,  P_batt_A[idx].value, P_batt_B[idx].value, P_batt_C[idx].value)
             dispatch_batteries[batt] = {}
             dispatch_batteries[batt]['p_batt'] =  p_batt[idx].value * 1000
             optimization_solution_table.append([name, self.Battery[batt]['phases'], p_batt[idx].value])
             idx += 1
         print('Optimization Solution')
         print(tabulate(optimization_solution_table, headers=['Battery', 'phases', 'P_batt (kW)'], tablefmt='psql'))
-        # "{:.3f}".format(9.999) 
+
         load_pv = ['{:.3f}'.format(sum_flow_A), '{:.3f}'.format(sum_flow_B), '{:.3f}'.format(sum_flow_C)]
         load_pv_batt = ['{:.3f}'.format(p_flow_A.value), '{:.3f}'.format(p_flow_B.value), '{:.3f}'.format(p_flow_C.value)]
         optimization_summary = []
         optimization_summary.append([load_pv, load_pv_batt, problem.status])
-        print(tabulate(optimization_summary, headers=['Load + PV', 'Load + PV + Batt', 'Status'], tablefmt='psql'))
+        print(tabulate(optimization_summary, headers=['Load+PV (kW)', 'Load+PV+Batt (kW)', 'Status'], tablefmt='psql'))
         return dispatch_batteries
 
 
