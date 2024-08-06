@@ -652,9 +652,9 @@ class PeakShavingController(object):
             self.send_setpoints()
 
     def get_load_minus_batteries(self):
-        load_A = 0
-        load_B = 0
-        load_C = 0
+        load_A = 0.0
+        load_B = 0.0
+        load_C = 0.0
         for xfmr_id in self.peak_va_measurements_A.keys():
             measurement = self.peak_va_measurements_A[xfmr_id].get('value')
             if measurement is not None:
