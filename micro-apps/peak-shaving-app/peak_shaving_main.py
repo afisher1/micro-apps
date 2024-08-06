@@ -627,27 +627,47 @@ class PeakShavingController(object):
         real_load_A, real_load_B, real_load_C = self.get_load_minus_batteries()
         if real_load_A > self.peak_setpoint_A:
             power_diff_A = real_load_A - self.peak_setpoint_A
-            self.desired_setpoints['A'].update(self.calc_batt_discharge_A(power_diff_A, lower_limit))
-        elif real_load_A < self.bottom_setpoint_A:
-            power_diff_A = self.peak_setpoint_A - real_load_A
-            self.desired_setpoints['A'].update(self.calc_batt_charge_A(power_diff_A, upper_limit))
+        elif real_load_A < self.base_setpoint_A:
+            power_diff_A = real_load_A - self.base_setpoint_A
         else:
-            for batt_id in self.controllable_batteries_A.keys():
-                measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
-                if measurement is None:
-                    continue
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if (mag is None) or (ang_in_deg is None):
-                    continue
-                current_power = mag * math.cos(math.radians(ang_in_deg))
-                new_power = 0.0
-                if abs(new_power - current_power) > 1e-3:
-                    self.desired_setpoints['A'][batt_id] = {
-                        'object': self.controllable_batteries_A['object'],
-                        'old_setpoint': current_power,
-                        'setpoint': new_power
-                    }
+            power_diff_A = 0.0
+        if real_load_B > self.peak_setpoint_B:
+            power_diff_B = real_load_B - self.peak_setpoint_B
+        elif real_load_B < self.base_setpoint_B:
+            power_diff_B = real_load_B - self.base_setpoint_B
+        else:
+            power_diff_B = 0.0
+        if real_load_C > self.peak_setpoint_C:
+            power_diff_C = real_load_C - self.peak_setpoint_C
+        elif real_load_C < self.base_setpoint_C:
+            power_diff_C = real_load_C - self.base_setpoint_C
+        else:
+            power_diff_C = 0.0
+        min_power_diff = min(power_diff_A, power_diff_B, power_diff_C)
+        max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
+        if min_power_diff > 1e-6:
+            control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
+            power_diff_A -= actual_power / 3.0
+            power_diff_B -= actual_power / 3.0
+            power_diff_C -= actual_power / 3.0
+        elif max_power_diff < -1e-6:
+            control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
+            power_diff_A += abs(actual_power) / 3.0
+            power_diff_B += abs(actual_power) / 3.0
+            power_diff_C += abs(actual_power) / 3.0
+        if power_diff_A > 1e-6:
+            control_dict = self.calc_batt_discharge_A(power_diff_A, lower_limit)
+        elif power_diff_A < -1e-6:
+            control_dict = self.calc_batt_charge_A(abs(power_diff_A), upper_limit)
+        if power_diff_B > 1e-6:
+            control_dict = self.calc_batt_discharge_B(power_diff_B, lower_limit)
+        elif power_diff_B < -1e-6:
+            control_dict = self.calc_batt_charge_B(abs(power_diff_B), upper_limit)
+        if power_diff_C > 1e-6:
+            control_dict = self.calc_batt_discharge_C(power_diff_C, lower_limit)
+        elif power_diff_C < -1e-6:
+            control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
+
         if self.desired_setpoints['A'] or self.desired_setpoints['B'] or self.desired_setpoints['C']:
             self.send_setpoints()
 
