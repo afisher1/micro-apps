@@ -711,7 +711,7 @@ class PeakShavingController(object):
             if batt_soc is not None:
                 if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
-                        'object': self.controllable_batteries_ABC['object'],
+                        'object': self.controllable_batteries_ABC[batt_id]['object'],
                         'old_setpoint': current_power,
                         'setpoint': 0.0
                     }
@@ -723,7 +723,7 @@ class PeakShavingController(object):
             new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
             if abs(new_power - current_power) > 1e-6:
                 return_dict[batt_id] = {
-                    'object': self.controllable_batteries_ABC['object'],
+                    'object': self.controllable_batteries_ABC[batt_id]['object'],
                     'old_setpoint': current_power,
                     'setpoint': new_power
                 }
