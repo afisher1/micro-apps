@@ -625,24 +625,21 @@ class PeakShavingController(object):
         lower_limit = 0.2
         upper_limit = 0.8
         real_load_A, real_load_B, real_load_C = self.get_load_minus_batteries()
+        power_diff_A = 0.0
+        power_diff_B = 0.0
+        power_diff_C = 0.0
         if real_load_A > self.peak_setpoint_A:
             power_diff_A = real_load_A - self.peak_setpoint_A
         elif real_load_A < self.base_setpoint_A:
             power_diff_A = real_load_A - self.base_setpoint_A
-        else:
-            power_diff_A = 0.0
         if real_load_B > self.peak_setpoint_B:
             power_diff_B = real_load_B - self.peak_setpoint_B
         elif real_load_B < self.base_setpoint_B:
             power_diff_B = real_load_B - self.base_setpoint_B
-        else:
-            power_diff_B = 0.0
         if real_load_C > self.peak_setpoint_C:
             power_diff_C = real_load_C - self.peak_setpoint_C
         elif real_load_C < self.base_setpoint_C:
             power_diff_C = real_load_C - self.base_setpoint_C
-        else:
-            power_diff_C = 0.0
         min_power_diff = min(power_diff_A, power_diff_B, power_diff_C)
         max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
         if min_power_diff > 1e-6:
