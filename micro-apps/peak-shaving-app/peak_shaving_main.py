@@ -872,7 +872,7 @@ class PeakShavingController(object):
     def calc_batt_discharge_A(self, power_to_discharge_A, lower_limit):
         if not isinstance(power_to_discharge_A, float):
             raise TypeError('calc_batt_discharge_A(): power_to_discharge_A must be an instance of float!')
-        if power_to_discharge_A >= 0.0:
+        if power_to_discharge_A < 0.0:
             raise ValueError(f'calc_batt_discharge_A(): power_to_discharge_A must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_A(): lower_limit must be an instance of float!')
@@ -881,21 +881,24 @@ class PeakShavingController(object):
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
         for batt_id in self.controllable_batteries_A.keys():
+            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
             batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
                 if batt_soc < lower_limit:
                     available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
             else:
                 available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
-        if available_capacity_A < 0.0:
+        if available_capacity_A <= 0.0:
             return return_dict
         for batt_id in self.controllable_batteries_A.keys():
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
-            if batt_soc is not None:
-                if batt_soc < lower_limit:
-                    continue
-            else:
-                continue
             measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
             if measurement is None:
                 continue
@@ -904,12 +907,23 @@ class PeakShavingController(object):
             if (mag is None) or (ang_in_deg is None):
                 continue
             current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_A[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
             new_power = (power_to_discharge_A /
                          available_capacity_A) * self.controllable_batteries_A[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_A[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1e-3:
+            if abs(new_power - current_power) > 1e-6:
                 return_dict[batt_id] = {
-                    'object': self.controllable_batteries_A['object'],
+                    'object': self.controllable_batteries_A[batt_id]['object'],
                     'old_setpoint': current_power,
                     'setpoint': new_power
                 }
