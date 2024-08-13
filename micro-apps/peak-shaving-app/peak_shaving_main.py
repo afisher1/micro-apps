@@ -773,7 +773,7 @@ class PeakShavingController(object):
             current_power = mag * math.cos(math.radians(ang_in_deg))
             batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
-                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
                         'object': self.controllable_batteries_ABC[batt_id]['object'],
                         'old_setpoint': current_power,
@@ -782,14 +782,14 @@ class PeakShavingController(object):
                     continue
             else:
                 continue
-            new_power = (power_to_discharge_ABC /
+            new_power = (power_to_charge_ABC /
                          available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
             if abs(new_power - current_power) > 1e-6:
                 return_dict[batt_id] = {
                     'object': self.controllable_batteries_ABC[batt_id]['object'],
                     'old_setpoint': current_power,
-                    'setpoint': new_power
+                    'setpoint': -new_power
                 }
                 power_acc += new_power
             else:
