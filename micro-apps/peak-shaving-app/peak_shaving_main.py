@@ -661,28 +661,36 @@ class PeakShavingController(object):
         max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
         if min_power_diff > 1e-6:
             control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
+            self.desired_setpoints.update(control_dict)
             power_diff_A -= actual_power / 3.0
             power_diff_B -= actual_power / 3.0
             power_diff_C -= actual_power / 3.0
         elif max_power_diff < -1e-6:
             control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
+            self.desired_setpoints.update(control_dict)
             power_diff_A += abs(actual_power) / 3.0
             power_diff_B += abs(actual_power) / 3.0
             power_diff_C += abs(actual_power) / 3.0
         if power_diff_A > 1e-6:
             control_dict = self.calc_batt_discharge_A(power_diff_A, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_A < -1e-6:
             control_dict = self.calc_batt_charge_A(abs(power_diff_A), upper_limit)
+            self.desired_setpoints.update(control_dict)
         if power_diff_B > 1e-6:
             control_dict = self.calc_batt_discharge_B(power_diff_B, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_B < -1e-6:
             control_dict = self.calc_batt_charge_B(abs(power_diff_B), upper_limit)
+            self.desired_setpoints.update(control_dict)
         if power_diff_C > 1e-6:
             control_dict = self.calc_batt_discharge_C(power_diff_C, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_C < -1e-6:
             control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
+            self.desired_setpoints.update(control_dict)
 
-        if self.desired_setpoints['A'] or self.desired_setpoints['B'] or self.desired_setpoints['C']:
+        if self.desired_setpoints:
             self.send_setpoints()
 
     def calc_batt_discharge_ABC(self, power_to_discharge_ABC, lower_limit):
