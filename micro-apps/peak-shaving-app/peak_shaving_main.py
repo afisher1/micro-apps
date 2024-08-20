@@ -287,6 +287,7 @@ class PeakShavingController(object):
                  gad_obj: GridAPPSD,
                  model_id: str,
                  peak_setpoint: float = None,
+                 base_setpoint: float = None,
                  sim_id: str = None,
                  simulation: Simulation = None):
         if not isinstance(gad_obj, GridAPPSD):
@@ -296,7 +297,9 @@ class PeakShavingController(object):
         if model_id is None or model_id == '':
             raise ValueError(f'model_id must be a valid uuid.')
         if not isinstance(peak_setpoint, float) and peak_setpoint is not None:
-            raise TypeError(f'peak_setpoint must be an float type or {None}!')
+            raise TypeError(f'peak_setpoint must be of float type or {None}!')
+        if not isinstance(base_setpoint, float) and base_setpoint is not None:
+            raise TypeError(f'base_setpoint must be of float type or {None}!')
         if not isinstance(sim_id, str) and sim_id is not None:
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
@@ -313,6 +316,9 @@ class PeakShavingController(object):
         self.peak_setpoint_A = None
         self.peak_setpoint_B = None
         self.peak_setpoint_C = None
+        self.base_setpoint_A = None
+        self.base_setpoint_B = None
+        self.base_setpoint_C = None
         self.measurements_topic = None
         self.setpoints_topic = None
         self.simulation = None
@@ -353,6 +359,14 @@ class PeakShavingController(object):
             self.peak_setpoint_C = peak_setpoint / 3.0
         else:
             self.configurePeakShavingSetpoint()
+        if base_setpoint is not None:
+            self.base_setpoint_A = base_setpoint / 3.0
+            self.base_setpoint_B = base_setpoint / 3.0
+            self.base_setpoint_C = base_setpoint / 3.0
+        else:
+            self.base_setpoint_A = 0.8 * self.peak_setpoint_A
+            self.base_setpoint_B = 0.8 * self.peak_setpoint_B
+            self.base_setpoint_C = 0.8 * self.peak_setpoint_C
         self.findFeederHeadLoadMeasurements()
         if self.simulation is not None:
             self.simulation.start_simulation()
@@ -543,9 +557,12 @@ class PeakShavingController(object):
         feederPowerRating = 0.0
         for source in energySources.values:
             feederPowerRating = findFeederPowerRating(source)
-        self.peak_setpoint_A = (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95)
-        self.peak_setpoint_B = (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95)
-        self.peak_setpoint_C = (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95)
+        self.peak_setpoint_A = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95))
+        self.peak_setpoint_B = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95))
+        self.peak_setpoint_C = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95))
 
     def findFeederHeadLoadMeasurements(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
