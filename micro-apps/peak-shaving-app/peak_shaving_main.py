@@ -689,7 +689,6 @@ class PeakShavingController(object):
         elif power_diff_C < -1e-6:
             control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
             self.desired_setpoints.update(control_dict)
-
         if self.desired_setpoints:
             self.send_setpoints()
 
