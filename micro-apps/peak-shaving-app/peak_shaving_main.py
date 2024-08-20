@@ -693,6 +693,79 @@ class PeakShavingController(object):
         if self.desired_setpoints:
             self.send_setpoints()
 
+    def get_load_minus_batteries(self):
+        load_A = 0.0
+        load_B = 0.0
+        load_C = 0.0
+        for xfmr_id in self.peak_va_measurements_A.keys():
+            measurement = self.peak_va_measurements_A[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_A += mag * math.cos(math.radians(ang_in_deg))
+        for xfmr_id in self.peak_va_measurements_B.keys():
+            measurement = self.peak_va_measurements_B[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_B += mag * math.cos(math.radians(ang_in_deg))
+        for xfmr_id in self.peak_va_measurements_C.keys():
+            measurement = self.peak_va_measurements_C[xfmr_id].get('value')
+            if measurement is not None:
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load_C += mag * math.cos(math.radians(ang_in_deg))
+        for batt_id_3ph in self.controllable_batteries_ABC.keys():
+            for measDict in self.controllable_batteries_ABC[batt_id_3ph]['power_measurements']:
+                measurement = measDict.get('value')
+                measurementObj = measDict.get('object')
+                if (measurement is None) or (measurementObj is None):
+                    continue
+                measurementPhase = measurementObj.phases
+                if measurementPhase in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_A -= mag * math.cos(math.radians(ang_in_deg))
+                elif measurementPhase in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_B -= mag * math.cos(math.radians(ang_in_deg))
+                elif measurementPhase in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_C -= mag * math.cos(math.radians(ang_in_deg))
+        for batt_id_1ph in self.controllable_batteries_A.keys():
+            for measDict in self.controllable_batteries_A[batt_id_1ph]['power_measurements']:
+                measurement = measDict.get('value')
+                if measurement is not None:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_A -= mag * math.cos(math.radians(ang_in_deg))
+        for batt_id_1ph in self.controllable_batteries_B.keys():
+            for measDict in self.controllable_batteries_B[batt_id_1ph]['power_measurements']:
+                measurement = measDict.get('value')
+                if measurement is not None:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_B -= mag * math.cos(math.radians(ang_in_deg))
+        for batt_id_1ph in self.controllable_batteries_C.keys():
+            for measDict in self.controllable_batteries_C[batt_id_1ph]['power_measurements']:
+                measurement = measDict.get('value')
+                if measurement is not None:
+                    mag = measurement.get('magnitude')
+                    ang_in_deg = measurement.get('angle')
+                    if ((mag is not None) and (ang_in_deg is not None)):
+                        load_C -= mag * math.cos(math.radians(ang_in_deg))
+        return (load_A, load_B, load_C)
+
     def calc_batt_discharge_ABC(self, power_to_discharge_ABC, lower_limit):
         if not isinstance(power_to_discharge_ABC, float):
             raise TypeError('calc_batt_discharge_ABC(): power_to_discharge_ABC must be an instance of float!')
@@ -820,79 +893,6 @@ class PeakShavingController(object):
             else:
                 power_acc += current_power
         return return_dict, power_acc
-
-    def get_load_minus_batteries(self):
-        load_A = 0.0
-        load_B = 0.0
-        load_C = 0.0
-        for xfmr_id in self.peak_va_measurements_A.keys():
-            measurement = self.peak_va_measurements_A[xfmr_id].get('value')
-            if measurement is not None:
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load_A += mag * math.cos(math.radians(ang_in_deg))
-        for xfmr_id in self.peak_va_measurements_B.keys():
-            measurement = self.peak_va_measurements_B[xfmr_id].get('value')
-            if measurement is not None:
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load_B += mag * math.cos(math.radians(ang_in_deg))
-        for xfmr_id in self.peak_va_measurements_C.keys():
-            measurement = self.peak_va_measurements_C[xfmr_id].get('value')
-            if measurement is not None:
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load_C += mag * math.cos(math.radians(ang_in_deg))
-        for batt_id_3ph in self.controllable_batteries_ABC.keys():
-            for measDict in self.controllable_batteries_ABC[batt_id_3ph]['power_measurements']:
-                measurement = measDict.get('value')
-                measurementObj = measDict.get('object')
-                if (measurement is None) or (measurementObj is None):
-                    continue
-                measurementPhase = measurementObj.phases
-                if measurementPhase in [cim.PhaseCode.A, cim.PhaseCode.AN]:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_A -= mag * math.cos(math.radians(ang_in_deg))
-                elif measurementPhase in [cim.PhaseCode.B, cim.PhaseCode.BN]:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_B -= mag * math.cos(math.radians(ang_in_deg))
-                elif measurementPhase in [cim.PhaseCode.C, cim.PhaseCode.CN]:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_C -= mag * math.cos(math.radians(ang_in_deg))
-        for batt_id_1ph in self.controllable_batteries_A.keys():
-            for measDict in self.controllable_batteries_A[batt_id_1ph]['power_measurements']:
-                measurement = measDict.get('value')
-                if measurement is not None:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_A -= mag * math.cos(math.radians(ang_in_deg))
-        for batt_id_1ph in self.controllable_batteries_B.keys():
-            for measDict in self.controllable_batteries_B[batt_id_1ph]['power_measurements']:
-                measurement = measDict.get('value')
-                if measurement is not None:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_B -= mag * math.cos(math.radians(ang_in_deg))
-        for batt_id_1ph in self.controllable_batteries_C.keys():
-            for measDict in self.controllable_batteries_C[batt_id_1ph]['power_measurements']:
-                measurement = measDict.get('value')
-                if measurement is not None:
-                    mag = measurement.get('magnitude')
-                    ang_in_deg = measurement.get('angle')
-                    if ((mag is not None) and (ang_in_deg is not None)):
-                        load_C -= mag * math.cos(math.radians(ang_in_deg))
-        return (load_A, load_B, load_C)
 
     def calc_batt_discharge_A(self, power_to_discharge_A, lower_limit):
         if not isinstance(power_to_discharge_A, float):
