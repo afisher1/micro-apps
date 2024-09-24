@@ -37,7 +37,7 @@ def findMeasurements(measurementsList, type: str):
         if measurement.measurementType == type:
             rv.append({'object': measurement, 'value': None})
     if not rv:
-        raise RuntimeError(f'findMeasurement(): No measurement of type {type} exists!.')
+        raise RuntimeError(f'findMeasurements(): No measurement of type {type} exists!.')
     return rv
 
 
@@ -121,29 +121,32 @@ def findFeederPowerRating(cimObj):
                            f'{cimObj.name}!')
     powerTransformerEnds = xfmr.PowerTransformerEnd
     if powerTransformerEnds:
-        keys = list(powerTransformerEnds.keys())
-        feederPowerRating = float(powerTransformerEnds[keys[0]].ratedS)
+        feederPowerRating = float(powerTransformerEnds[0].ratedS)
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
+    print(f"Feeder Power Rating: {feederPowerRating} W")
     return feederPowerRating
 
 
-def findFeederTransformer(cimObj):
+def findFeederHeadPowerMeasurmentsObject(cimObj: object):
     '''
         Helper function to find feeder transformer
     '''
     if not isinstance(cimObj, cim.EnergySource):
-        raise TypeError('findFeederTransformer(): cimObj must be an instance of cim.EnergySource!')
+        raise TypeError('findFeederHeadPowerMeasurmentsObject(): cimObj must be an instance of cim.EnergySource!')
     equipmentToCheck = [cimObj]
-    xfmr = None
-    feederPowerRating = None
+    feederHeadLoadMeasurementsObject = None
     i = 0
-    while not xfmr and i < len(equipmentToCheck):
+    while not feederHeadLoadMeasurementsObject and i < len(equipmentToCheck):
         equipmentToAdd = []
         for eq in equipmentToCheck[i:]:
-            if isinstance(eq, cim.PowerTransformer):
-                xfmr = eq
-                break
+            powerMeasurementsCount = 0
+            for meas in eq.Measurements:
+                if meas.measurementType == 'VA':
+                    powerMeasurementsCount += 1
+            if powerMeasurementsCount == 3:
+                feederHeadLoadMeasurementsObject = eq
+                break    
             else:
                 terminals = eq.Terminals
                 connectivityNodes = []
@@ -156,13 +159,10 @@ def findFeederTransformer(cimObj):
                             equipmentToAdd.append(t.ConductingEquipment)
         i = len(equipmentToCheck)
         equipmentToCheck.extend(equipmentToAdd)
-    if not xfmr:
-        raise RuntimeError('findFeederPowerRating(): No feeder head transformer could be found for EnergySource, '
-                           f'{cimObj.name}!')
-    powerTransformerEnds = xfmr.PowerTransformerEnd
-    if not powerTransformerEnds:
-        raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
-    return xfmr
+    if not feederHeadLoadMeasurementsObject:
+        raise RuntimeError('findFeederPowerRating(): No feeder head object with power measurements could be found for '
+                           f'EnergySource, {cimObj.name}!')
+    return feederHeadLoadMeasurementsObject
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
@@ -172,32 +172,6 @@ def buildGraphModel(mrid: str) -> FeederModel:
     if mrid not in CIM_GRAPH_MODELS.keys():
         feeder_container = cim.Feeder(mRID=mrid)
         graph_model = FeederModel(connection=DB_CONNECTION, container=feeder_container, distributed=False)
-        # graph_model.get_all_edges(cim.PowerTransformer)
-        # graph_model.get_all_edges(cim.TransformerTank)
-        # graph_model.get_all_edges(cim.Asset)
-        # graph_model.get_all_edges(cim.LinearShuntCompensator)
-        # graph_model.get_all_edges(cim.PowerTransformerEnd)
-        # graph_model.get_all_edges(cim.TransformerEnd)
-        # graph_model.get_all_edges(cim.TransformerMeshImpedance)
-        # graph_model.get_all_edges(cim.TransformerTankEnd)
-        # graph_model.get_all_edges(cim.TransformerTankInfo)
-        # graph_model.get_all_edges(cim.RatioTapChanger)
-        # graph_model.get_all_edges(cim.TapChanger)
-        # graph_model.get_all_edges(cim.TapChangerControl)
-        # graph_model.get_all_edges(cim.TapChangerInfo)
-        # graph_model.get_all_edges(cim.LinearShuntCompensatorPhase)
-        # graph_model.get_all_edges(cim.Terminal)
-        # graph_model.get_all_edges(cim.ConnectivityNode)
-        # graph_model.get_all_edges(cim.BaseVoltage)
-        # graph_model.get_all_edges(cim.EnergySource)
-        # graph_model.get_all_edges(cim.EnergyConsumer)
-        # graph_model.get_all_edges(cim.ConformLoad)
-        # graph_model.get_all_edges(cim.NonConformLoad)
-        # graph_model.get_all_edges(cim.EnergyConsumerPhase)
-        # graph_model.get_all_edges(cim.LoadResponseCharacteristic)
-        # graph_model.get_all_edges(cim.PowerCutZone)
-        # graph_model.get_all_edges(cim.Analog)
-        # graph_model.get_all_edges(cim.Discrete)
         cimUtils.get_all_data(graph_model)
         CIM_GRAPH_MODELS[mrid] = graph_model
     return CIM_GRAPH_MODELS[mrid]
@@ -352,7 +326,7 @@ class PeakShavingController(object):
         self.installed_battery_power_B = 0.0
         self.installed_battery_power_C = 0.0
         self.configureBatteryProperties()
-        # print(measurements.keys())
+        # feederLoadMeasurements(measurements.keys())
         if peak_setpoint is not None:
             self.peak_setpoint_A = peak_setpoint / 3.0
             self.peak_setpoint_B = peak_setpoint / 3.0
@@ -382,7 +356,7 @@ class PeakShavingController(object):
             self.controllable_batteries_C
         '''
         powerElectronicsConnections = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
-        for pec in powerElectronicsConnections:
+        for pec in powerElectronicsConnections.values():
             isBatteryInverter = False
             batteryCapacity = 0.0
             for powerElectronicsUnit in pec.PowerElectronicsUnit:
@@ -394,7 +368,7 @@ class PeakShavingController(object):
                 if inverterPhases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
                     self.installed_battery_capacity_A += batteryCapacity
                     self.installed_battery_power_A += float(pec.ratedS)
-                    self.controllable_batteries_A[pec.mrid] = {
+                    self.controllable_batteries_A[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -406,7 +380,7 @@ class PeakShavingController(object):
                 elif inverterPhases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
                     self.installed_battery_capacity_B += batteryCapacity
                     self.installed_battery_power_B += float(pec.ratedS)
-                    self.controllable_batteries_B[pec.mrid] = {
+                    self.controllable_batteries_B[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -418,7 +392,7 @@ class PeakShavingController(object):
                 elif inverterPhases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
                     self.installed_battery_capacity_C += batteryCapacity
                     self.installed_battery_power_C += float(pec.ratedS)
-                    self.controllable_batteries_C[pec.mrid] = {
+                    self.controllable_batteries_C[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -427,97 +401,10 @@ class PeakShavingController(object):
                             'value': None
                         }
                     }
-                # elif inverterPhases in [cim.PhaseCode.AB, cim.PhaseCode.ABN]:
-                #     self.installed_battery_capacity_A += batteryCapacity / 2.0
-                #     self.installed_battery_power_A += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_A[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.A, cim.PhaseCode.AN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.A, cim.PhaseCode.AN]),
-                #             'value': None
-                #         }
-                #     }
-                #     self.installed_battery_capacity_B += batteryCapacity / 2.0
-                #     self.installed_battery_power_B += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_B[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.B, cim.PhaseCode.BN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.B, cim.PhaseCode.BN]),
-                #             'value': None
-                #         }
-                #     }
-                # elif inverterPhases in [cim.PhaseCode.AC, cim.PhaseCode.ACN]:
-                #     self.installed_battery_capacity_A += batteryCapacity / 2.0
-                #     self.installed_battery_power_A += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_A[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.A, cim.PhaseCode.AN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.A, cim.PhaseCode.AN]),
-                #             'value': None
-                #         }
-                #     }
-                #     self.installed_battery_capacity_C += batteryCapacity / 2.0
-                #     self.installed_battery_power_C += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_C[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.C, cim.PhaseCode.CN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.C, cim.PhaseCode.CN]),
-                #             'value': None
-                #         }
-                #     }
-                # elif inverterPhases in [cim.PhaseCode.BC, cim.PhaseCode.BCN]:
-                #     self.installed_battery_capacity_B += batteryCapacity / 2.0
-                #     self.installed_battery_power_B += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_B[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.B, cim.PhaseCode.BN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.B, cim.PhaseCode.BN]),
-                #             'value': None
-                #         }
-                #     }
-                #     self.installed_battery_capacity_C += batteryCapacity / 2.0
-                #     self.installed_battery_power_C += float(pec.ratedS) / 2.0
-                #     self.controllable_batteries_C[pec.mrid] = {
-                #         'object': pec,
-                #         'maximum_power': float(pec.ratedS),
-                #         'power_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'VA', [cim.PhaseCode.C, cim.PhaseCode.CN]),
-                #             'value': None
-                #         },
-                #         'soc_measurement': {
-                #             'object': findMeasurement(pec.Measurements, 'SoC', [cim.PhaseCode.C, cim.PhaseCode.CN]),
-                #             'value': None
-                #         }
-                #     }
                 elif inverterPhases in [cim.PhaseCode.ABC, cim.PhaseCode.ABCN]:
                     self.installed_battery_capacity_ABC += batteryCapacity
                     self.installed_battery_power_ABC += float(pec.ratedS)
-                    self.controllable_batteries_ABC[pec.mrid] = {
+                    self.controllable_batteries_ABC[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -534,11 +421,14 @@ class PeakShavingController(object):
             raise TypeError('PeakShavingController.getInverterPhases(): cimObj must be an instance of '
                             'cim.PowerElectronicsConnection!')
         strPhases = ''
-        for pecp in cimObj.PowerElectronicsConnectionPhases:
-            if pecp.phase != cim.SinglePhaseKind.s1 and pecp.phase != cim.SinglePhaseKind.s2:
-                strPhases += pecp.phase.value
-            else:
-                strPhases = pecp.phase.value
+        if len(cimObj.PowerElectronicsConnectionPhases) > 0:
+            for pecp in cimObj.PowerElectronicsConnectionPhases:
+                if pecp.phase != cim.SinglePhaseKind.s1 and pecp.phase != cim.SinglePhaseKind.s2:
+                    strPhases += pecp.phase.value
+                else:
+                    strPhases = pecp.phase.value
+        else:
+            strPhases = 'ABC'
         if 'A' in strPhases or 'B' in strPhases or 'C' in strPhases:
             phaseCodeStr = ''
             if 'A' in strPhases:
@@ -547,7 +437,7 @@ class PeakShavingController(object):
                 phaseCodeStr += 'B'
             if 'C' in strPhases:
                 phaseCodeStr += 'C'
-            phaseCode = cim.PhaseCode('phaseCodeStr')
+            phaseCode = cim.PhaseCode(phaseCodeStr)
         else:    # inverter is on the secondary system need to trace up to the centertapped tansformer.
             phaseCode = self.findPrimaryPhase(cimObj)
         return phaseCode
@@ -555,7 +445,7 @@ class PeakShavingController(object):
     def configurePeakShavingSetpoint(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
         feederPowerRating = 0.0
-        for source in energySources.values:
+        for source in energySources.values():
             feederPowerRating = findFeederPowerRating(source)
         self.peak_setpoint_A = max(0.5 * (feederPowerRating / 3.0),
                                    (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95))
@@ -566,19 +456,19 @@ class PeakShavingController(object):
 
     def findFeederHeadLoadMeasurements(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
-        feederTransformer = None
-        for source in energySources.values:
-            feederTransformer = findFeederTransformer(source)
-            transformerMeasurements = feederTransformer.Measurements
-            for measurement in transformerMeasurements:
-                if measurement.measurementType == 'VA' and int(measurement.Terminal.sequenceNumber) == 1:
+        feederLoadObject = None
+        for eSource in energySources.values():
+            feederLoadObject = findFeederHeadPowerMeasurmentsObject(eSource)
+            feederLoadMeasurements = feederLoadObject.Measurements
+            for measurement in feederLoadMeasurements:
+                if measurement.measurementType == 'VA':
                     if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
                         self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
                     elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
                         self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
                     elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
                         self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
-        if not self.peak_va_measurements_A or self.peak_va_measurements_B or self.peak_va_measurements_C:
+        if not self.peak_va_measurements_A or not self.peak_va_measurements_B or not self.peak_va_measurements_C:
             raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
                                'feeder head transformer!')
 
@@ -604,7 +494,7 @@ class PeakShavingController(object):
                     measDict['value'] = measurement
             measurement = measurements.get(self.controllable_batteries_ABC[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_A[mrid]['soc_measurement']['value'] = measurement
+                self.controllable_batteries_ABC[mrid]['soc_measurement']['value'] = measurement
         for mrid in self.controllable_batteries_A.keys():
             for measDict in self.controllable_batteries_A[mrid]['power_measurements']:
                 measurement = measurements.get(measDict['object'].mRID)
@@ -630,8 +520,8 @@ class PeakShavingController(object):
             if measurement is not None:
                 self.controllable_batteries_C[mrid]['soc_measurement']['value'] = measurement
         self.peak_shaving_control()
-        if self.simulation is not None:
-            self.simulation.resume()
+        # if self.simulation is not None:
+        #     self.simulation.resume()
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -778,14 +668,20 @@ class PeakShavingController(object):
         power_acc = 0.0
         available_capacity_ABC = self.installed_battery_power_ABC
         for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
+            measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+            measurement = {}
+            mag = None
+            ang_in_deg = None
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    break
+                mag = measurement.get('value', {}).get('magnitude')
+                ang_in_deg = measurement.get('value', {}).get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    break
             if (mag is None) or (ang_in_deg is None):
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
                 continue
             batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
@@ -796,14 +692,20 @@ class PeakShavingController(object):
         if available_capacity_ABC <= 0.0:
             return return_dict, power_acc
         for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
+            measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+            measurement = {}
+            mag = []
+            ang_in_deg = []
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    break
+                mag.append(measurement.get('value', {}).get('magnitude'))
+                ang_in_deg.append(measurement.get('value', {}).get('angle'))
+            if None in mag or None in ang_in_deg:
                 continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                continue
-            current_power = mag * math.cos(math.radians(ang_in_deg))
+            current_power = 0.0
+            for i in range(len(mag)):
+                current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
             batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
                 if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
@@ -818,7 +720,7 @@ class PeakShavingController(object):
             new_power = (power_to_discharge_ABC /
                          available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1e-6:
+            if abs(new_power - current_power) > 1.0e6:
                 return_dict[batt_id] = {
                     'object': self.controllable_batteries_ABC[batt_id]['object'],
                     'old_setpoint': current_power,
@@ -842,14 +744,19 @@ class PeakShavingController(object):
         power_acc = 0.0
         available_capacity_ABC = self.installed_battery_power_ABC
         for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
+            measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+            mag = None
+            ang_in_deg = None
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    break
+                mag = measurement.get('value', {}).get('magnitude')
+                ang_in_deg = measurement.get('value', {}).get('angle')
+                if mag is None or ang_in_deg is None:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    break
             if (mag is None) or (ang_in_deg is None):
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
                 continue
             batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
@@ -860,14 +767,19 @@ class PeakShavingController(object):
         if available_capacity_ABC <= 0.0:
             return return_dict, power_acc
         for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
+            measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+            mag = []
+            ang_in_deg = []
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    break
+                mag.append(measurement.get('value', {}).get('magnitude'))
+                ang_in_deg.append(measurement.get('value', {}).get('angle'))
+            if None in mag or None in ang_in_deg:
                 continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                continue
-            current_power = mag * math.cos(math.radians(ang_in_deg))
+            current_power = 0.0
+            for i in range(len(mag)):
+                current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
             batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
                 if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
@@ -1260,89 +1172,13 @@ class PeakShavingController(object):
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.PowerElectronicsConnection):
-                self.differenceBuilder.add_difference(cimObj.mRID, 'PowerElectronicsConnection.p', newSetpoint[0],
-                                                      oldSetpoint)
+                self.differenceBuilder.add_difference(cimObj.PowerElectronicsUnit[0].mRID, 
+                                                      'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
             else:
                 self.log.warning(
                     f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
                     f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
                     'object.')
-        # for dictVal in self.desired_setpoints['A'].values():
-        #     cimObj = dictVal.get('object')
-        #     newSetpoint = dictVal.get('setpoint')
-        #     oldSetpoint = dictVal.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(cimObj.mRID, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for dictVal in self.desired_setpoints['B'].values():
-        #     cimObj = dictVal.get('object')
-        #     newSetpoint = dictVal.get('setpoint')
-        #     oldSetpoint = dictVal.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(cimObj.mRID, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for dictVal in self.desired_setpoints['C'].values():
-        #     cimObj = dictVal.get('object')
-        #     newSetpoint = dictVal.get('setpoint')
-        #     oldSetpoint = dictVal.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(cimObj.mRID, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for mrid in mrids_phase_AB:
-        #     dictValA = self.desired_setpoints['A'].get(mrid, {})
-        #     dictValB = self.desired_setpoints['B'].get(mrid, {})
-        #     cimObj = dictValA.get('object')
-        #     newSetpoint = dictValA.get('setpoint') + dictValB.get('setpoint')
-        #     oldSetpoint = dictValA.get('old_setpoint') + dictValB.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for mrid in mrids_phase_BC:
-        #     dictValC = self.desired_setpoints['C'].get(mrid, {})
-        #     dictValB = self.desired_setpoints['B'].get(mrid, {})
-        #     cimObj = dictValC.get('object')
-        #     newSetpoint = dictValC.get('setpoint') + dictValB.get('setpoint')
-        #     oldSetpoint = dictValC.get('old_setpoint') + dictValB.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for mrid in mrids_phase_AC:
-        #     dictValA = self.desired_setpoints['A'].get(mrid, {})
-        #     dictValC = self.desired_setpoints['C'].get(mrid, {})
-        #     cimObj = dictValA.get('object')
-        #     newSetpoint = dictValA.get('setpoint') + dictValC.get('setpoint')
-        #     oldSetpoint = dictValA.get('old_setpoint') + dictValC.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(mrid, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
-        # for dictVal in self.desired_setpoints['ABC'].values():
-        #     cimObj = dictVal.get('object')
-        #     newSetpoint = dictVal.get('setpoint')
-        #     oldSetpoint = dictVal.get('old_setpoint')
-        #     if isinstance(cimObj, cim.PowerElectronicsConnection):
-        #         self.differenceBuilder.add_difference(cimObj.mRID, 'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
-        #     else:
-        #         self.log.warning(f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
-        #                          f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
-        #                          'object.')
         setpointMessage = self.differenceBuilder.get_message()
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
