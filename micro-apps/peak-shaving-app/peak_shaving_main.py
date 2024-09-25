@@ -817,16 +817,21 @@ class PeakShavingController(object):
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
         for batt_id in self.controllable_batteries_A.keys():
-            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
+            measurements = self.controllable_batteries_A[batt_id]['power_measurements']
+            mag = None
+            ang_in_deg = None
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                    break
+                mag = measurement.get('value', {}).get('magnitude')
+                ang_in_deg = measurement.get('value', {}).get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                    break
             if (mag is None) or (ang_in_deg is None):
-                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
                 continue
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if batt_soc < lower_limit:
                     available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
@@ -835,15 +840,20 @@ class PeakShavingController(object):
         if available_capacity_A <= 0.0:
             return return_dict
         for batt_id in self.controllable_batteries_A.keys():
-            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
-            if measurement is None:
+            measurements = self.controllable_batteries_A[batt_id]['power_measurement']
+            mag = []
+            ang_in_deg = []
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    continue
+                mag.append(measurement.get('value', {}).get('magnitude'))
+                ang_in_deg.append(measurement.get('value', {}).get('angle'))
+            if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
                 continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                continue
-            current_power = mag * math.cos(math.radians(ang_in_deg))
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            current_power = 0.0
+            for i in range(len(mag)):
+                current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
@@ -877,16 +887,21 @@ class PeakShavingController(object):
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
         for batt_id in self.controllable_batteries_A.keys():
-            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
+            measurements = self.controllable_batteries_A[batt_id]['power_measurements']
+            mag = None
+            ang_in_deg = None
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                    break
+                mag = measurement.get('value', {}).get('magnitude')
+                ang_in_deg = measurement.get('value', {}).get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                    break
             if (mag is None) or (ang_in_deg is None):
-                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
                 continue
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if batt_soc > upper_limit:
                     available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
@@ -895,15 +910,20 @@ class PeakShavingController(object):
         if available_capacity_A <= 0.0:
             return return_dict
         for batt_id in self.controllable_batteries_A.keys():
-            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
-            if measurement is None:
+            measurements = self.controllable_batteries_A[batt_id]['power_measurements']
+            mag = []
+            ang_in_deg = []
+            for measurement in measurements:
+                if measurement.get('value') is None:
+                    continue
+                mag.append(measurement.get('value', {}).get('magnitude'))
+                ang_in_deg.append(measurement.get('value', {}).get('angle'))
+            if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
                 continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                continue
-            current_power = mag * math.cos(math.radians(ang_in_deg))
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            current_power = 0.0
+            for i in range(len(mag)):
+                current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
