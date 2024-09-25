@@ -124,7 +124,7 @@ def findFeederPowerRating(cimObj):
         feederPowerRating = float(powerTransformerEnds[0].ratedS)
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
-    print(f"Feeder Power Rating: {feederPowerRating} W")
+    print(f'Feeder Power Rating: {feederPowerRating} W')
     return feederPowerRating
 
 
@@ -146,7 +146,7 @@ def findFeederHeadPowerMeasurmentsObject(cimObj: object):
                     powerMeasurementsCount += 1
             if powerMeasurementsCount == 3:
                 feederHeadLoadMeasurementsObject = eq
-                break    
+                break
             else:
                 terminals = eq.Terminals
                 connectivityNodes = []
@@ -683,7 +683,7 @@ class PeakShavingController(object):
                     break
             if (mag is None) or (ang_in_deg is None):
                 continue
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if batt_soc < lower_limit:
                     available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
@@ -701,12 +701,12 @@ class PeakShavingController(object):
                     break
                 mag.append(measurement.get('value', {}).get('magnitude'))
                 ang_in_deg.append(measurement.get('value', {}).get('angle'))
-            if None in mag or None in ang_in_deg:
+            if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
                 continue
             current_power = 0.0
             for i in range(len(mag)):
                 current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
@@ -753,12 +753,12 @@ class PeakShavingController(object):
                     break
                 mag = measurement.get('value', {}).get('magnitude')
                 ang_in_deg = measurement.get('value', {}).get('angle')
-                if mag is None or ang_in_deg is None:
+                if (mag is None) or (ang_in_deg is None):
                     available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
                     break
             if (mag is None) or (ang_in_deg is None):
                 continue
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if batt_soc > upper_limit:
                     available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
@@ -775,12 +775,12 @@ class PeakShavingController(object):
                     break
                 mag.append(measurement.get('value', {}).get('magnitude'))
                 ang_in_deg.append(measurement.get('value', {}).get('angle'))
-            if None in mag or None in ang_in_deg:
+            if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
                 continue
             current_power = 0.0
             for i in range(len(mag)):
                 current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value', {}).get('value')
             if batt_soc is not None:
                 if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
                     return_dict[batt_id] = {
@@ -1172,7 +1172,7 @@ class PeakShavingController(object):
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.PowerElectronicsConnection):
-                self.differenceBuilder.add_difference(cimObj.PowerElectronicsUnit[0].mRID, 
+                self.differenceBuilder.add_difference(cimObj.PowerElectronicsUnit[0].mRID,
                                                       'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
             else:
                 self.log.warning(
