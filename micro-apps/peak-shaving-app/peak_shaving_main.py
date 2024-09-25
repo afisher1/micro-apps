@@ -669,7 +669,6 @@ class PeakShavingController(object):
         available_capacity_ABC = self.installed_battery_power_ABC
         for batt_id in self.controllable_batteries_ABC.keys():
             measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
-            measurement = {}
             mag = None
             ang_in_deg = None
             for measurement in measurements:
@@ -693,7 +692,6 @@ class PeakShavingController(object):
             return return_dict, power_acc
         for batt_id in self.controllable_batteries_ABC.keys():
             measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
-            measurement = {}
             mag = []
             ang_in_deg = []
             for measurement in measurements:
