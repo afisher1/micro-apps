@@ -529,8 +529,8 @@ class PeakShavingController(object):
         self.on_measurement(None, timestamp, measurements)
 
     def peak_shaving_control(self):
-        lower_limit = 0.2
-        upper_limit = 0.8
+        lower_limit = 20.0
+        upper_limit = 80.0
         real_load_A, real_load_B, real_load_C = self.get_load_minus_batteries()
         power_diff_A = 0.0
         power_diff_B = 0.0
