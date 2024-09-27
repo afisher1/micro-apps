@@ -535,6 +535,7 @@ class PeakShavingController(object):
         power_diff_A = 0.0
         power_diff_B = 0.0
         power_diff_C = 0.0
+        deadband_ABC = True
         if real_load_A > self.peak_setpoint_A:
             power_diff_A = real_load_A - self.peak_setpoint_A
         elif real_load_A < self.base_setpoint_A:
@@ -550,12 +551,14 @@ class PeakShavingController(object):
         min_power_diff = min(power_diff_A, power_diff_B, power_diff_C)
         max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
         if min_power_diff > 1e-6:
+            deadband_ABC = False
             control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
             self.desired_setpoints.update(control_dict)
             power_diff_A -= actual_power / 3.0
             power_diff_B -= actual_power / 3.0
             power_diff_C -= actual_power / 3.0
         elif max_power_diff < -1e-6:
+            deadband_ABC = False
             control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
             self.desired_setpoints.update(control_dict)
             power_diff_A += abs(actual_power) / 3.0
@@ -579,6 +582,27 @@ class PeakShavingController(object):
         elif power_diff_C < -1e-6:
             control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
             self.desired_setpoints.update(control_dict)
+        if deadband_ABC:
+            for batt_id in self.controllable_batteries_ABC.keys():
+                measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+                mag = []
+                ang_in_deg = []
+                for measurement in measurements:
+                    if measurement.get('value') is None:
+                        break
+                    mag.append(measurement.get('value', {}).get('magnitude'))
+                    ang_in_deg.append(measurement.get('value', {}).get('angle'))
+                if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
+                    continue
+                current_power = 0.0
+                for i in range(len(mag)):
+                    current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
+                if (abs(current_power) > 1e-6):
+                    self.desired_setpoints[batt_id] = {
+                        'object': self.controllable_batteries_ABC[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
         if self.desired_setpoints:
             self.send_setpoints()
 
