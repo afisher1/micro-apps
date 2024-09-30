@@ -720,7 +720,7 @@ class PeakShavingController(object):
             new_power = (power_to_discharge_ABC /
                          available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1.0e6:
+            if abs(new_power - current_power) > 1.0e-6:
                 return_dict[batt_id] = {
                     'object': self.controllable_batteries_ABC[batt_id]['object'],
                     'old_setpoint': current_power,
