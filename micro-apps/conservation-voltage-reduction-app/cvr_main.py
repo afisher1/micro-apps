@@ -1,4 +1,5 @@
 import importlib
+import logging
 import math
 import os
 from argparse import ArgumentParser
@@ -16,6 +17,12 @@ from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
 
+logging.basicConfig(format='%(asctime)s::%(levelname)s::%(name)s::%(filename)s::%(lineno)d::%(message)s',
+                    filename='cvr.log',
+                    filemode='w',
+                    level=logging.INFO,
+                    encoding='utf-8')
+logger = logging.getLogger(__name__)
 cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
@@ -133,11 +140,10 @@ class ConservationVoltageReductionController(object):
             self.simulation_id = simulation.simulation_id
             self.simulation.add_onmeasurement_callback(self.on_measurement)
         if sim_id is None:
-            self.measurements_topic = topics.field_output_topic(None, sim_id)
+            self.measurements_topic = topics.field_output_topic(None, None)
         else:
             self.simulation_id = sim_id
             self.measurements_topic = topics.simulation_output_topic(sim_id)
-        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.gad_obj = gad_obj
         self.log = self.gad_obj.get_logger()
         if self.measurements_topic:
@@ -184,7 +190,8 @@ class ConservationVoltageReductionController(object):
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
-        measurements = self.graph_model.graph.get(cim.Analog, {})
+        measurements = {}
+        measurements.update(self.graph_model.graph.get(cim.Analog, {}))
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
 
         # print(measurements.keys())
@@ -210,16 +217,24 @@ class ConservationVoltageReductionController(object):
         #     print(json.dumps(r['PhasesToName'], indent=4, sort_keys=True))
         if self.simulation is not None:
             self.simulation.start_simulation()
+            self.simulation_id = self.simulation.simulation_id
+        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.dssContext = dss.NewContext()
         self.create_opendss_context()
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
+        self.measurementTime = -1
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
-        if not isinstance(sim, Simulation):
-            self.log.error('')
+        if isinstance(sim, Simulation):
+            self.setpoints_topic = topics.simulation_input_topic(sim.simulation_id)
+            self.simulation.pause();
+        elif self.simulation_id:
+            self.setpoints_topic = topics.simulation_input_topic(self.simulation_id)
+        else:
+            self.setpoints_topic = topics.field_input_topic()
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
@@ -234,37 +249,48 @@ class ConservationVoltageReductionController(object):
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
-        self.calculate_per_unit_voltage()
-        self.update_opendss_with_measurements()
-        if int(timestamp) > self.next_control_time:
-            self.cvr_control()
-            self.next_control_time = int(timestamp) + self.period
-            self.voltage_violation_time = -1
-        else:
-            total_violation_time = 0
-            voltage_violation_phases = ''
-            for mrid, val in self.pnv_measurements_pu.items():
-                if val is not None:
-                    if val < self.low_volt_lim:
-                        if self.voltage_violation_time < 0:
-                            self.voltage_violation_time = int(timestamp)
-                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
-                            if isinstance(meas, cim.Measurement):
-                                measPhase = meas.phases
-                                if measPhase in [
-                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
-                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
-                                ]:
-                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
-                                if measPhase.value not in voltage_violation_phases:
-                                    voltage_violation_phases += measPhase.value
-                        else:
-                            total_violation_time = int(timestamp) - self.voltage_violation_time
-                        break
-            if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                self.cvr_control(voltage_violation_phases)
-                self.voltage_violation_time = int(timestamp)
-        if self.simulation is not None:
+                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, (cim.LinearShuntCompensator, cim.PowerTransformer)):
+                        pos_measurement_debug_data = {
+                            "object_type": f"{type(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource).__name__}",
+                            "name": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource.name,
+                            "phase": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].phases.value,
+                            "value": int(meas.get("value")),
+                            "timestamp": timestamp
+                        }
+                        logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
+        if (self.measurementTime < 0):
+            self.measurementTime = int(timestamp)
+            self.calculate_per_unit_voltage()
+            self.update_opendss_with_measurements()
+            if int(timestamp) > self.next_control_time:
+                self.cvr_control()
+                self.next_control_time = int(timestamp) + self.period
+                self.voltage_violation_time = -1
+            else:
+                total_violation_time = 0
+                voltage_violation_phases = ''
+                for mrid, val in self.pnv_measurements_pu.items():
+                    if val is not None:
+                        if val < self.low_volt_lim:
+                            if self.voltage_violation_time < 0:
+                                self.voltage_violation_time = int(timestamp)
+                                meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                                if isinstance(meas, cim.Measurement):
+                                    measPhase = meas.phases
+                                    if measPhase in [
+                                            cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                            cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                    ]:
+                                        measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                    if measPhase.value not in voltage_violation_phases:
+                                        voltage_violation_phases += measPhase.value
+                            else:
+                                total_violation_time = int(timestamp) - self.voltage_violation_time
+                            break
+                if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                    self.cvr_control(voltage_violation_phases)
+                    self.voltage_violation_time = int(timestamp)
+        if isinstance(sim, Simulation):
             self.simulation.resume()
 
     def calculate_per_unit_voltage(self):
@@ -284,7 +310,7 @@ class ConservationVoltageReductionController(object):
             if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
                 self.log.error(f'The cim.Measurement object {mrid} associated with this measurement value is missing! '
                                'It will be ignored in cvr control.')
-                print(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
+                logger.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
                 continue
             if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
                 meas_base = float(meas_obj.PowerSystemResource.ratedU)
@@ -298,21 +324,31 @@ class ConservationVoltageReductionController(object):
                             if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
                                 meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
                             else:
-                                self.log.error(f'meas_term.TransformerEnd[0].BaseVoltage is None')
+                                self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
+                                                f'{meas_term.ConnectivityNode.name} is None')
                     elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
                         if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
                             meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
                         else:
-                            print(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                            logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
                     else:
-                        print(f'meas_term.ConductingEquipment is None')
-            # print(f'base voltage is {meas_base}V')
+                        logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
-                print('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
-                      f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
+                logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                             f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
-            self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
+            pnv_meta_data = {'measured PNV': meas_value, 'measured LLV': meas_value * math.sqrt(3.0), 'rated V': meas_base}
+            pu_vals = [meas_value / meas_base, meas_value * math.sqrt(3.0) / meas_base]
+            diff = max(pu_vals)
+            for i in range(len(pu_vals)):
+                if abs(1.0-pu_vals[i]) < diff:
+                    diff = abs(1.0-pu_vals[i])
+                    self.pnv_measurements_pu[mrid] = pu_vals[1]
+            pnv_meta_data['pu V'] = self.pnv_measurements_pu[mrid]
+            logger.info(f'Voltage meta data for {meas_obj.Terminal.ConnectivityNode.name}:{json.dumps(pnv_meta_data,indent=4)}')
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -343,6 +379,8 @@ class ConservationVoltageReductionController(object):
         self.dssContext.Command(f'Redirect {fileDir}')
         self.dssContext.Command(f'Compile {fileDir}')
         self.dssContext.Solution.SolveNoControl()
+        if not self.dssContext.Solution.Converged():
+            raise RuntimeError("Internal OpenDSS model fails to converge!")
 
     def update_opendss_with_measurements(self):
         for psr_mrid in self.va_measurements.keys():
@@ -361,13 +399,37 @@ class ConservationVoltageReductionController(object):
                 meas_obj = self.va_measurements[psr_mrid]['measurement_objects'][meas_mrid].PowerSystemResource
                 name = meas_obj.name
                 if isinstance(meas_obj, cim.EnergyConsumer):
+                    load = self.dssContext.Loads.First()
+                    while load:
+                        if self.dssContext.Loads.Name() == name:
+                            break
+                        else:
+                            load = self.dssContext.Loads.Next()
+                    old_val = complex(self.dssContext.Loads.kW(), self.dssContext.Loads.kvar())
                     self.dssContext.Command(f'Load.{name}.kw={va_val.real}')
                     self.dssContext.Command(f'Load.{name}.kvar={va_val.imag}')
+                    logger.info(f'Changing load, {name}.\nOld: {old_val}\nNew: '
+                          f'{complex(self.dssContext.Loads.kW(), self.dssContext.Loads.kvar())}')
                 elif isinstance(meas_obj, cim.PowerElectronicsConnection):
-                    if isinstance(meas_obj.PowerElectronicsUnit, cim.PhotovoltaicUnit):
+                    if isinstance(meas_obj.PowerElectronicsUnit[0], cim.PhotovoltaicUnit):
+                        pv = self.dssContext.PVsystems.First()
+                        while pv:
+                            if self.dssContext.PVsystems.Name() == name:
+                                break
+                            else:
+                                pv = self.dssContext.PVsystems.Next()
+                        old_val = complex(self.dssContext.PVsystems.kW(), self.dssContext.PVsystems.kvar())
                         self.dssContext.Command(f'PVSystem.{name}.pmpp={va_val.real}')
                         self.dssContext.Command(f'PVSystem.{name}.kvar={va_val.imag}')
-                    elif isinstance(meas_obj.PowerElectronicsUnit, cim.BatteryUnit):
+                        logger.info(f'Changing PV, {name}.\nOld: {old_val}\nNew: '
+                            f'{complex(self.dssContext.PVsystems.kW(), self.dssContext.PVsystems.kvar())}')
+                    elif isinstance(meas_obj.PowerElectronicsUnit[0], cim.BatteryUnit):
+                        batt = self.dssContext.Storages.First()
+                        while batt:
+                            if self.dssContext.Storages.Name() == name:
+                                break
+                            else:
+                                batt = self.dssContext.Storages.Next()
                         self.dssContext.Command(f'Storage.{name}.kw={va_val.real}')
                         self.dssContext.Command(f'Storage.{name}.kvar={va_val.imag}')
                     #TODO: update wind turbines in opendss
@@ -380,7 +442,7 @@ class ConservationVoltageReductionController(object):
             for meas_mrid in key_list:
                 meas_val = self.pos_measurements[psr_mrid]['measurement_values'][meas_mrid]
                 if meas_val is not None:
-                    pos_val[key_list.index(meas_mrid)] = meas_val.get('value')
+                    pos_val[key_list.index(meas_mrid)] = int(meas_val.get('value'))
                 else:
                     val_is_valid = False
                     break
@@ -391,11 +453,30 @@ class ConservationVoltageReductionController(object):
                 if isinstance(meas_obj, cim.Switch):
                     switch_state = sum(pos_val)
                     if switch_state == 0:
-                        self.dssContext.Command(f'close Line.{name} 1')
-                    else:
+                        logger.info(f'Opening switch {name}')
                         self.dssContext.Command(f'open Line.{name} 1')
+                    else:
+                        logger.info(f'Closing switch {name}')
+                        self.dssContext.Command(f'close Line.{name} 1')
                 elif isinstance(meas_obj, cim.LinearShuntCompensator):
-                    self.dssContext.Command(f'Capacitor.{name}.states={pos_val}')
+                    cap = self.dssContext.Capacitors.First()
+                    while cap:
+                        if self.dssContext.Capacitors.Name() == name:
+                            break
+                        else:
+                            cap = self.dssContext.Capacitors.Next()
+                    if not cap:
+                        logger.error(f'There is no capacitor with the name {name} in the OpenDSS model!')
+                        self.log.error(f'There is no capacitor with the name {name} in the OpenDSS model!')
+                    else:
+                        capacitor_state = sum(pos_val)
+                        if capacitor_state == 0:
+                            logger.info(f'Disengaging shunt capacitor.')
+                            self.dssContext.Capacitors.Open()
+                        else:
+                            logger.info(f'Engaging shunt capacitor.')
+                            self.dssContext.Capacitors.Close()
+                        # self.dssContext.Command(f'Capacitor.{name}.states={pos_val}')
                 if isinstance(meas_obj, cim.PowerTransformer):
                     name = self.controllable_regulators.get(psr_mrid, {}).get('PhasesToName', {}).get(meas_phase)
                     if name is not None:
@@ -413,6 +494,9 @@ class ConservationVoltageReductionController(object):
                                                  / self.dssContext.Transformers.NumTaps()
                             tapStep = 1.0 + (pos_val[0] * regulationPerStep)
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
+        self.dssContext.Solution.SolveNoControl()
+        if not self.dssContext.Solution.Converged():
+            raise RuntimeError("Internal OpenDSS model fails to converge after updating with measurements!")
 
     def cvr_control(self, phases: str = None):
         capacitor_list = []
@@ -487,20 +571,20 @@ class ConservationVoltageReductionController(object):
                     cap = self.dssContext.Capacitors.Next()
             if cap:
                 saved_states = self.dssContext.Capacitors.States()
-                print(f'saved states:{saved_states}')
             else:
-                saved_states = [0]
-            self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
-            self.dssContext.Solution.SolveNoControl()
-            converged = self.dssContext.Solution.Converged()
-            if converged:
-                print(f'Powerflow converged when closing cap {cap_mrid}.')
-                return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
-                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                    print(f'Voltage violations were eliminated when closing cap {cap_mrid}.')
-                    success = True
-            else:
-                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+                saved_states = [1]
+            if saved_states[0] != pos_val[0]:
+                self.dssContext.Capacitors.Close()
+                self.dssContext.Solution.SolveNoControl()
+                converged = self.dssContext.Solution.Converged()
+                if converged:
+                    logger.info(f'Powerflow converged when closing cap {cap_mrid}.')
+                    return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
+                    if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                        logger.info(f'Voltage violations were eliminated when closing cap {cap_mrid}.')
+                        success = True
+                else:
+                    self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
         return return_dict
 
     def decrease_voltage_capacitor(self, cap_list: list) -> dict:
@@ -521,23 +605,24 @@ class ConservationVoltageReductionController(object):
                     cap = self.dssContext.Capacitors.Next()
             if cap:
                 saved_states = self.dssContext.Capacitors.States()
-                print(f'saved states:{saved_states}')
+                logger.info(f'saved states:{saved_states}')
             else:
-                saved_states = [1]
-            self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
-            self.dssContext.Solution.SolveNoControl()
-            converged = self.dssContext.Solution.Converged()
-            success = False
-            if converged:
-                print(f'Powerflow converged when opening cap {cap_mrid}.')
-                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                    print(f'Opening cap {cap_mrid} caused no voltage violations.')
-                    return_dict[cap_mrid] = {'setpoint': 0, 'object': cap_obj}
-                    success = True
-            if not success:
-                print(f'Opening cap {cap_mrid} caused voltage violations or powerflow did not converge.')
-                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
-        print(f'return_dict length: {len(return_dict)}')
+                saved_states = [0]
+            if saved_states[0] != pos_val[0]:
+                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
+                self.dssContext.Solution.SolveNoControl()
+                converged = self.dssContext.Solution.Converged()
+                success = False
+                if converged:
+                    logger.info(f'Powerflow converged when opening cap {cap_mrid}.')
+                    if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                        logger.info(f'Opening cap {cap_mrid} caused no voltage violations.')
+                        return_dict[cap_mrid] = {'setpoint': 0, 'object': cap_obj}
+                        success = True
+                if not success:
+                    logger.info(f'Opening cap {cap_mrid} caused voltage violations or powerflow did not converge.')
+                    self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+        logger.info(f'return_dict length: {len(return_dict)}')
         return return_dict
 
     def decrease_voltage_regulator(self, reg_list: list) -> dict:
@@ -575,16 +660,16 @@ class ConservationVoltageReductionController(object):
                             newSetpointRatio[j] = oldSetpointRatio[j]
                         minTapRatio = self.dssContext.Transformers.MinTap()
                         rtpCurrentTap = newSetpointRatio[j]
-                        tapStep = float(rtp.step)
+                        tapStep = float(rtp.stepVoltageIncrement) / 100.0
                         if rtpCurrentTap <= minTapRatio:
                             break
                         self.dssContext.Transformers.Tap(rtpCurrentTap - tapStep)
                         self.dssContext.Solution.SolveNoControl()
                         converged = self.dssContext.Solution.Converged()
                         if converged:
-                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                            logger.info(f'Powerflow converged when modifying regulator {psr_mrid}.')
                             if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                                print(f'modifying regulator {psr_mrid} did not cause a voltage violation.')
+                                logger.info(f'modifying regulator {psr_mrid} did not cause a voltage violation.')
                                 if rtp.mRID not in return_dict.keys():
                                     return_dict[rtp.mRID] = {
                                         'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
@@ -593,8 +678,8 @@ class ConservationVoltageReductionController(object):
                                     }
                                 else:
                                     return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(
-                                        rtpCurrentTap + tapStep, rtp)
-                                rtpCurrentTap = rtpCurrentTap + tapStep
+                                        rtpCurrentTap - tapStep, rtp)
+                                rtpCurrentTap = rtpCurrentTap - tapStep
                                 newSetpointRatio[j] = rtpCurrentTap
                             else:
                                 stopDecrease[j] = True
@@ -643,14 +728,14 @@ class ConservationVoltageReductionController(object):
                             newSetpointRatio[j] = oldSetpointRatio[j]
                         maxTapRatio = self.dssContext.Transformers.MaxTap()
                         rtpCurrentTap = newSetpointRatio[j]
-                        tapStep = float(rtp.step)
+                        tapStep = float(rtp.stepVoltageIncrement) / 100.0
                         if rtpCurrentTap >= maxTapRatio:
                             break
                         self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
                         self.dssContext.Solution.SolveNoControl()
                         converged = self.dssContext.Solution.Converged()
                         if converged:
-                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                            logger.info(f'Powerflow converged when modifying regulator {psr_mrid}.')
                             if rtp.mRID not in return_dict.keys():
                                 return_dict[rtp.mRID] = {
                                     'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
@@ -662,7 +747,7 @@ class ConservationVoltageReductionController(object):
                             rtpCurrentTap = rtpCurrentTap + tapStep
                             newSetpointRatio[j] = rtpCurrentTap
                             if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                                print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                                logger.info(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
                                 success = True
                                 break
                         else:
@@ -680,18 +765,40 @@ class ConservationVoltageReductionController(object):
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.LinearShuntCompensator):
-                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
-                                                      int(not newSetpoint[0]))
+                phases = ""
+                for shuntCompensatorPhase in cimObj.ShuntCompensatorPhase:
+                    phases += shuntCompensatorPhase.phase.value
+                if not phases:
+                    phases = "ABC"
+                pos_setpoint_command_debug_data = {
+                    "object_type": f"{type(cimObj).__name__}",
+                    "name": cimObj.name,
+                    "phase": phases,
+                    "value": newSetpoint
+                }
+                logger.info(f"Pos Setpoint Change: {json.dumps(pos_setpoint_command_debug_data)}")
+                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint,
+                                                      int(not newSetpoint))
             elif isinstance(cimObj, cim.RatioTapChanger):
-                tapChangersList = self.controllable_regulators.get(cim.PowerTransformer.mRID,
-                                                                   {}).get('RatioTapChangers', [])
-                for rtp in tapChangersList:
-                    self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
+                phases = ""
+                if isinstance(cimObj.TransformerEnd, cim.PowerTransformerEnd):
+                    phases = "ABC"
+                else:
+                    phases = cimObj.TransformerEnd.phases.value
+                pos_setpoint_command_debug_data = {
+                    "object_type": f"{type(cimObj).__name__}",
+                    "name": cimObj.name,
+                    "phase": phases,
+                    "value": newSetpoint
+                }
+                logger.info(f"Pos Setpoint Change: {json.dumps(pos_setpoint_command_debug_data)}")
+                self.differenceBuilder.add_difference(cimObj.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
             else:
                 self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
                                  f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
                                  'sending a setpoint to this object.')
-        setpointMessage = self.differenceBuilder.get_message()
+        setpointMessage = json.dumps(self.differenceBuilder.get_message(), indent=4, sort_keys=True)
+        logger.info(f"send_setpoint():\ntopic: {self.setpoints_topic}\nmessage: {type(setpointMessage)}")
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
@@ -774,8 +881,8 @@ def tapPositionToTapRatio(tapPosition: int, ratioTapChanger) -> float:
         raise TypeError('tapPositionToTapRatio(): ratioTapChanger must be a cim.RatioTapChanger.')
     maxTapPosition = int(ratioTapChanger.highStep)
     minTapPosition = int(ratioTapChanger.lowStep)
-    neutralTapPosition = int(ratioTapChanger.nuetralStep)
-    stepRatio = float(ratioTapChanger.step)
+    neutralTapPosition = int(ratioTapChanger.neutralStep)
+    stepRatio = float(ratioTapChanger.stepVoltageIncrement) / 100.0
     if tapPosition > maxTapPosition or tapPosition < minTapPosition:
         raise ValueError('tapPostionToTapRatio(): tapPosition must be within the maximum and minimum tap positions of '
                          'the ratioTapChanger!')
@@ -793,8 +900,8 @@ def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
         raise TypeError('tapRatioToTapPosition(): ratioTapChanger must be a cim.RatioTapChanger.')
     maxTapPosition = int(ratioTapChanger.highStep)
     minTapPosition = int(ratioTapChanger.lowStep)
-    neutralTapPosition = int(ratioTapChanger.nuetralStep)
-    stepRatio = float(ratioTapChanger.step)
+    neutralTapPosition = int(ratioTapChanger.neutralStep)
+    stepRatio = float(ratioTapChanger.stepVoltageIncrement) / 100.0
     if tapPositionRatio > tapPositionToTapRatio(maxTapPosition,
                                                 ratioTapChanger) or tapPositionRatio < tapPositionToTapRatio(
                                                     minTapPosition, ratioTapChanger):
@@ -802,7 +909,10 @@ def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
                          'positions of the ratioTapChanger!')
     if neutralTapPosition is None:
         neutralTapPosition = 0
-    tapPosition = math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5) + neutralTapPosition
+    if tapPositionRatio < 1.0:
+        tapPosition = neutralTapPosition - math.floor(((1.0 - tapPositionRatio) / stepRatio) + 0.5)
+    else:
+        tapPosition = neutralTapPosition + math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5)
     if tapPosition > maxTapPosition:
         tapPosition = maxTapPosition
     elif tapPosition < minTapPosition:
@@ -868,7 +978,8 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    start_time = 1728078070
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
         duration=f'{24*3600}',
