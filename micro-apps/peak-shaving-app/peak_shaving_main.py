@@ -1,4 +1,5 @@
 import importlib
+import logging
 import math
 import os
 from argparse import ArgumentParser
@@ -15,6 +16,13 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 
+
+logging.basicConfig(format='%(asctime)s::%(levelname)s::%(name)s::%(filename)s::%(lineno)d::%(message)s',
+                    filename='peak_shaving.log',
+                    filemode='w',
+                    level=logging.INFO,
+                    encoding='utf-8')
+logger = logging.getLogger(__name__)
 cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
@@ -124,7 +132,7 @@ def findFeederPowerRating(cimObj):
         feederPowerRating = float(powerTransformerEnds[0].ratedS)
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
-    print(f'Feeder Power Rating: {feederPowerRating} W')
+    logger.info(f'Feeder Power Rating: {feederPowerRating} W')
     return feederPowerRating
 
 
@@ -306,7 +314,7 @@ class PeakShavingController(object):
         else:
             self.simulation_id = sim_id
             self.measurements_topic = topics.simulation_output_topic(sim_id)
-        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
+        
         self.gad_obj = gad_obj
         self.log = self.gad_obj.get_logger()
         if self.measurements_topic:
@@ -344,7 +352,7 @@ class PeakShavingController(object):
         self.findFeederHeadLoadMeasurements()
         if self.simulation is not None:
             self.simulation.start_simulation()
-
+        self.differenceBuilder = DifferenceBuilder(self.simulation.simulation_id)
         self.isValid = True
         self.first_message = True
 
@@ -474,7 +482,9 @@ class PeakShavingController(object):
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
-        #TODO: update measurements
+        if isinstance(sim, Simulation):
+            self.setpoints_topic = topics.simulation_input_topic(sim.simulation_id)
+            sim.pause()
         for mrid in self.peak_va_measurements_A.keys():
             measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
             if measurement is not None:
@@ -520,8 +530,8 @@ class PeakShavingController(object):
             if measurement is not None:
                 self.controllable_batteries_C[mrid]['soc_measurement']['value'] = measurement
         self.peak_shaving_control()
-        # if self.simulation is not None:
-        #     self.simulation.resume()
+        if isinstance(sim, Simulation):
+            sim.resume()
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -686,7 +696,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_discharge_ABC(): power_to_discharge_ABC must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_ABC(): lower_limit must be an instance of float!')
-        if (lower_limit > 1.0) or (lower_limit < 0.0):
+        if (lower_limit > 100.0) or (lower_limit < 0.0):
             raise ValueError(f'calc_batt_discharge_ABC(): lower_limit must belong to the [0, 1] interval!')
         return_dict = {}
         power_acc = 0.0
@@ -760,7 +770,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_charge_ABC(): power_to_charge_ABC must be nonnegative!')
         if not isinstance(upper_limit, float):
             raise TypeError('calc_batt_charge_ABC(): upper_limit must be an instance of float!')
-        if (upper_limit > 1.0) or (upper_limit < 0.0):
+        if (upper_limit > 100.0) or (upper_limit < 0.0):
             raise ValueError(f'calc_batt_charge_ABC(): upper_limit must belong to the [0, 1] interval!')
         return_dict = {}
         power_acc = 0.0
@@ -834,7 +844,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_discharge_A(): power_to_discharge_A must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_A(): lower_limit must be an instance of float!')
-        if (lower_limit > 1.0) or (lower_limit < 0.0):
+        if (lower_limit > 100.0) or (lower_limit < 0.0):
             raise ValueError(f'calc_batt_discharge_A(): lower_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
@@ -904,7 +914,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_charge_A(): power_to_charge_A must be nonnegative!')
         if not isinstance(upper_limit, float):
             raise TypeError('calc_batt_charge_A(): upper_limit must be an instance of float!')
-        if (upper_limit > 1.0) or (upper_limit < 0.0):
+        if (upper_limit > 100.0) or (upper_limit < 0.0):
             raise ValueError(f'calc_batt_charge_A(): upper_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
@@ -974,7 +984,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_discharge_B(): power_to_discharge_B must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_B(): lower_limit must be an instance of float!')
-        if (lower_limit > 1.0) or (lower_limit < 0.0):
+        if (lower_limit > 100.0) or (lower_limit < 0.0):
             raise ValueError(f'calc_batt_discharge_B(): lower_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_B = self.installed_battery_power_B
@@ -1044,7 +1054,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_charge_B(): power_to_charge_B must be nonnegative!')
         if not isinstance(upper_limit, float):
             raise TypeError('calc_batt_charge_B(): upper_limit must be an instance of float!')
-        if (upper_limit > 1.0) or (upper_limit < 0.0):
+        if (upper_limit > 100.0) or (upper_limit < 0.0):
             raise ValueError(f'calc_batt_charge_B(): upper_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_B = self.installed_battery_power_B
@@ -1114,7 +1124,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_discharge_C(): power_to_discharge_C must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_C(): lower_limit must be an instance of float!')
-        if (lower_limit > 1.0) or (lower_limit < 0.0):
+        if (lower_limit > 100.0) or (lower_limit < 0.0):
             raise ValueError(f'calc_batt_discharge_C(): lower_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_C = self.installed_battery_power_C
@@ -1184,7 +1194,7 @@ class PeakShavingController(object):
             raise ValueError(f'calc_batt_charge_C(): power_to_charge_C must be nonnegative!')
         if not isinstance(upper_limit, float):
             raise TypeError('calc_batt_charge_C(): upper_limit must be an instance of float!')
-        if (upper_limit > 1.0) or (upper_limit < 0.0):
+        if (upper_limit > 100.0) or (upper_limit < 0.0):
             raise ValueError(f'calc_batt_charge_C(): upper_limit must belong to the [0, 1] interval!')
         return_dict = {}
         available_capacity_C = self.installed_battery_power_C
@@ -1255,13 +1265,13 @@ class PeakShavingController(object):
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.PowerElectronicsConnection):
                 self.differenceBuilder.add_difference(cimObj.PowerElectronicsUnit[0].mRID,
-                                                      'PowerElectronicsConnection.p', newSetpoint[0], oldSetpoint)
+                                                      'PowerElectronicsConnection.p', newSetpoint, oldSetpoint)
             else:
                 self.log.warning(
                     f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
                     f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
                     'object.')
-        setpointMessage = self.differenceBuilder.get_message()
+        setpointMessage = json.dumps(self.differenceBuilder.get_message(), indent=4, sort_keys=True)
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
