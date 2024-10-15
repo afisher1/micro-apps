@@ -224,7 +224,6 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
-        self.measurementTime = -1
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
@@ -258,38 +257,36 @@ class ConservationVoltageReductionController(object):
                             "timestamp": timestamp
                         }
                         logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
-        if (self.measurementTime < 0):
-            self.measurementTime = int(timestamp)
-            self.calculate_per_unit_voltage()
-            self.update_opendss_with_measurements()
-            if int(timestamp) > self.next_control_time:
-                self.cvr_control()
-                self.next_control_time = int(timestamp) + self.period
-                self.voltage_violation_time = -1
-            else:
-                total_violation_time = 0
-                voltage_violation_phases = ''
-                for mrid, val in self.pnv_measurements_pu.items():
-                    if val is not None:
-                        if val < self.low_volt_lim:
-                            if self.voltage_violation_time < 0:
-                                self.voltage_violation_time = int(timestamp)
-                                meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
-                                if isinstance(meas, cim.Measurement):
-                                    measPhase = meas.phases
-                                    if measPhase in [
-                                            cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
-                                            cim.PhaseCode.s2, cim.PhaseCode.s2N
-                                    ]:
-                                        measPhase = findPrimaryPhase(meas.PowerSystemResource)
-                                    if measPhase.value not in voltage_violation_phases:
-                                        voltage_violation_phases += measPhase.value
-                            else:
-                                total_violation_time = int(timestamp) - self.voltage_violation_time
-                            break
-                if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                    self.cvr_control(voltage_violation_phases)
-                    self.voltage_violation_time = int(timestamp)
+        self.calculate_per_unit_voltage()
+        self.update_opendss_with_measurements()
+        if int(timestamp) > self.next_control_time:
+            self.cvr_control()
+            self.next_control_time = int(timestamp) + self.period
+            self.voltage_violation_time = -1
+        else:
+            total_violation_time = 0
+            voltage_violation_phases = ''
+            for mrid, val in self.pnv_measurements_pu.items():
+                if val is not None:
+                    if val < self.low_volt_lim:
+                        if self.voltage_violation_time < 0:
+                            self.voltage_violation_time = int(timestamp)
+                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                            if isinstance(meas, cim.Measurement):
+                                measPhase = meas.phases
+                                if measPhase in [
+                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                ]:
+                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                if measPhase.value not in voltage_violation_phases:
+                                    voltage_violation_phases += measPhase.value
+                        else:
+                            total_violation_time = int(timestamp) - self.voltage_violation_time
+                        break
+            if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                self.cvr_control(voltage_violation_phases)
+                self.voltage_violation_time = int(timestamp)
         if isinstance(sim, Simulation):
             self.simulation.resume()
 
