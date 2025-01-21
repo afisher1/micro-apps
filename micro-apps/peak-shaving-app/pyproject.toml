@@ -1,0 +1,34 @@
+[tool.poetry]
+name = "peak-shaving-app"
+version = "0.1.0"
+description = ""
+authors = ["afisher1 <4552674+afisher1@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gridappsd-python = {version = "^2024", allow-prereleases = true}
+cim-graph = "^0.1.5a0"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^3.7.0"
+yapf = "^0.40.2"
+mypy = "^1.9.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.yapfignore]
+ignore_patterns = [
+    ".venv/**",
+    ".pytest_cache/**",
+    "dist/**",
+    "docs/**"
+]
+
+[tool.yapf]
+based_on_style = "pep8"
+spaces_before_comment = 4
+column_limit = 120
+split_before_logical_operator = true
