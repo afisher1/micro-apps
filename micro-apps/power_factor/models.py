@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, astuple
-import cimgraph.data_profile.rc4_2021 as cim_dp
+import cimgraph.data_profile.cimhub_2023 as cim_dp
 import numpy as np
 
 

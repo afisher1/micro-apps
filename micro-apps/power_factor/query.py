@@ -1,7 +1,7 @@
 import networkx as nx
 import cimgraph.utils
 import cimgraph.models
-import cimgraph.data_profile.rc4_2021 as cim_dp
+import cimgraph.data_profile.cimhub_2023 as cim_dp
 import models
 import logging
 

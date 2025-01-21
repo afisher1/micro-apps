@@ -1,15 +1,15 @@
-import importlib
-import logging
-import math
-import os
-import csv
-from cmath import exp
 from argparse import ArgumentParser
+from cmath import exp
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 from uuid import uuid4
 
-import cimgraph.utils as cimUtils
+import csv
+import importlib
+import logging
+import math
+import os
+
 from cimgraph.databases import ConnectionParameters
 from cimgraph.databases.blazegraph.blazegraph import BlazegraphConnection
 from cimgraph.databases.gridappsd.gridappsd import GridappsdConnection
@@ -17,6 +17,8 @@ from cimgraph.models import FeederModel
 from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
+
+import cimgraph.utils as cimUtils
 
 logging.basicConfig(format='%(asctime)s::%(levelname)s::%(name)s::%(filename)s::%(lineno)d::%(message)s',
                     filename='peak_shaving.log',
@@ -29,11 +31,11 @@ DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
 
 
-IEEE123_APPS = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
+IEEE123_APPS = "F49D1288-9EC6-47DB-8769-57E2B6EDB124"
 ieee123_apps_feeder_head_measurement_mrids = [
-    "_903a0e85-6a11-4b8e-82cf-163376df7764",
-    "_6d82c9d9-5f99-4356-8a8d-acda9cd6f17b",
-    "_971765b5-da69-4ea8-a0cb-d2b9613b8ee3"
+    "43c1d677-586e-4ef5-b35c-f08d326af31c",
+    "cd3e1fca-6826-4d8b-8d42-5cb5817e085f",
+    "36e2d53e-6e91-4a0c-a1ce-a196ff422332"
 ]
 
 def add_data_to_csv(file_path, data, header=None):
@@ -107,11 +109,24 @@ def findPrimaryPhase(cimObj):
         if phaseCode is not None:
             break
         for tankEnd in tank.TransformerTankEnds:
-            if tankEnd.phases not in [
-                cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
-                cim.PhaseCode.s2, cim.PhaseCode.s2N
+            if tankEnd.orderedPhases not in [
+                cim.OrderedPhaseCodeKind.X,
+                cim.OrderedPhaseCodeKind.XN,
+                cim.OrderedPhaseCodeKind.XY,
+                cim.OrderedPhaseCodeKind.XYN,
+                cim.OrderedPhaseCodeKind.none,
+                cim.OrderedPhaseCodeKind.s1,
+                cim.OrderedPhaseCodeKind.s12,
+                cim.OrderedPhaseCodeKind.s21,
+                cim.OrderedPhaseCodeKind.s21N,
+                cim.OrderedPhaseCodeKind.s12N,
+                cim.OrderedPhaseCodeKind.s1N,
+                cim.OrderedPhaseCodeKind.Ns1,
+                cim.OrderedPhaseCodeKind.s2,
+                cim.OrderedPhaseCodeKind.s2N,
+                cim.OrderedPhaseCodeKind.Ns2
             ]:
-                phaseCode = tankEnd.phases
+                phaseCode = tankEnd.orderedPhases
                 break
     if not phaseCode:
         raise RuntimeError('findPrimaryPhase(): the upstream centertapped transformer has no primary phase defined!?')
@@ -1542,8 +1557,8 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         raise TypeError(
             f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
     global cim, DB_CONNECTION
-    cim_profile = 'rc4_2021'
-    iec61970_301 = 7
+    cim_profile = 'cimhub_2023'
+    iec61970_301 = 8
     cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
     # params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
     # DB_CONNECTION = GridappsdConnection(params)

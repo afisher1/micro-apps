@@ -2,35 +2,31 @@ import os
 import json
 import traceback
 import logging
-from pprint import pprint
-import networkx as nx
-import numpy as np
-import cvxpy as cp
 import importlib
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
-import cimgraph.utils
-from cimgraph.databases import ConnectionParameters
-from cimgraph.databases import BlazegraphConnection
-from cimgraph.databases import GridappsdConnection
+
+import cvxpy as cp
+import networkx as nx
+import numpy as np
+
+from cimgraph.databases import BlazegraphConnection, ConnectionParameters, GridappsdConnection
 from cimgraph.models import FeederModel
-import cimgraph.data_profile.rc4_2021 as cim_dp
 from gridappsd import GridAPPSD, DifferenceBuilder
-from gridappsd.simulation import Simulation
-from gridappsd.simulation import PowerSystemConfig
-from gridappsd.simulation import ApplicationConfig
-from gridappsd.simulation import SimulationConfig
-from gridappsd.simulation import SimulationArgs
-from gridappsd.simulation import ModelCreationConfig
-from gridappsd.simulation import ServiceConfig
 from gridappsd import topics as t
+from gridappsd.simulation import ApplicationConfig, ModelCreationConfig, PowerSystemConfig, ServiceConfig, Simulation, \
+    SimulationArgs, SimulationConfig
+
+import cimgraph.utils
+import cimgraph.data_profile.cimhub_2023 as cim_dp
+
 import models
 import query
 
-IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
-IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
-IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
-IEEE123PV = "_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"
+IEEE123_APPS = "E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
+IEEE13 = "49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
+IEEE123 = "C1C3E687-6FFD-C753-582B-632A27E28507"
+IEEE123PV = "E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"
 SOURCE_BUS = "150r"
 OUT_DIR = "outputs"
 ROOT = os.getcwd()
@@ -96,8 +92,9 @@ class PowerFactor(object):
 
         self.data_info.compensators_ratings = self.compensators.ratings
         self.data_info.pecs_ratings = self.electronics.ratings
-        self.temp_source_bus = ["_9d721fcc-7229-42f5-b2e2-d9b0a8adecfd",
-                                "_81930576-6f0d-4c4f-a857-8e359b5210cd", "_425640dd-811d-483f-9675-03d9b516b7f8"]
+        self.temp_source_bus = ["43c1d677-586e-4ef5-b35c-f08d326af31c",
+                                "cd3e1fca-6826-4d8b-8d42-5cb5817e085f",
+                                "36e2d53e-6e91-4a0c-a1ce-a196ff422332"]
 
         (graph, source_bus, mrid) = query.generate_graph(network)
         self.source_mrid = mrid

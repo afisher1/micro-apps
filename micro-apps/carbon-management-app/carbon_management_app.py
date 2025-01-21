@@ -1,46 +1,37 @@
-import time
-import os
-import math
-from cmath import exp
-from pprint import pprint
-# import networkx as nx
-# import numpy as np
-import cvxpy as cp
-# from pandas import DataFrame
-from typing import Any, Dict
-import importlib
-from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass, asdict
 from argparse import ArgumentParser
+from cmath import exp
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict
+
+import csv
+import importlib
 import json
-from typing import Dict
+import math
+import os
+import time
+
 from cimgraph import utils
-from tabulate import tabulate
 from cimgraph.databases import ConnectionParameters, BlazegraphConnection
 from cimgraph.models import FeederModel
-import cimgraph.data_profile.rc4_2021 as cim
-from cimgraph.data_profile.rc4_2021 import EnergyConsumer
-from cimgraph.data_profile.rc4_2021 import BatteryUnit
-from cimgraph.data_profile.rc4_2021 import PowerElectronicsConnection
 from gridappsd import GridAPPSD, topics, DifferenceBuilder
-from gridappsd.simulation import Simulation
-from gridappsd.simulation import PowerSystemConfig
-from gridappsd.simulation import SimulationConfig
-from gridappsd.simulation import SimulationArgs
-from gridappsd.simulation import ModelCreationConfig
-from gridappsd import topics as t
-import csv
-from pathlib import Path
+from gridappsd.simulation import ModelCreationConfig, PowerSystemConfig, Simulation, SimulationArgs, SimulationConfig
+from tabulate import tabulate
 
-# IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
-IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
-IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
-IEEE123PV = "_A3BC35AA-01F6-478E-A7B1-8EA4598A685C"
-IEEE123_APPS = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
+import cimgraph.data_profile.cimhub_2023 as cim
+import cvxpy as cp
+
+
+# IEEE123_APPS = "E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
+IEEE13 = "49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
+IEEE123 = "C1C3E687-6FFD-C753-582B-632A27E28507"
+IEEE123PV = "A3BC35AA-01F6-478E-A7B1-8EA4598A685C"
+IEEE123_APPS = "F49D1288-9EC6-47DB-8769-57E2B6EDB124"
 ieee123_apps_feeder_head_measurement_mrids = [
-    "_903a0e85-6a11-4b8e-82cf-163376df7764",
-    "_6d82c9d9-5f99-4356-8a8d-acda9cd6f17b",
-    "_971765b5-da69-4ea8-a0cb-d2b9613b8ee3"
+    "43c1d677-586e-4ef5-b35c-f08d326af31c",
+    "cd3e1fca-6826-4d8b-8d42-5cb5817e085f",
+    "36e2d53e-6e91-4a0c-a1ce-a196ff422332"
 ]
 SOURCE_BUS = '150r'
 OUT_DIR = "outputs"
@@ -127,14 +118,14 @@ class CarbonManagementApp(object):
         self.has_batteries = True
         self.has_power_electronics = True
         self.has_energy_consumers = True
-        if PowerElectronicsConnection not in network.graph:
+        if cim.PowerElectronicsConnection not in network.graph:
             self.has_power_electronics = False
             self.has_batteries = False
             # raise ValueError("No power electronic devices in network.")
-        elif len(network.graph[PowerElectronicsConnection].keys()) == 0:
+        elif len(network.graph[cim.PowerElectronicsConnection].keys()) == 0:
             self.has_power_electronics = False
             self.has_batteries = False
-        if EnergyConsumer not in network.graph:
+        if cim.EnergyConsumer not in network.graph:
             self.has_energy_consumers = False
 
         if self.has_power_electronics:
@@ -222,11 +213,11 @@ class CarbonManagementApp(object):
                 add_data_to_csv(file_path, data, header=header)
 
     def _collect_power_electronic_devices(self, network):
-        for pec in network.graph.get(PowerElectronicsConnection, {}).values():
+        for pec in network.graph.get(cim.PowerElectronicsConnection, {}).values():
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:
                 unit_mrid = unit.mRID
-                if isinstance(unit, BatteryUnit):
+                if isinstance(unit, cim.BatteryUnit):
                     self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
                                                'measurementPhases': []}
                     self.Battery[unit_mrid]['name'] = unit.name
@@ -265,7 +256,7 @@ class CarbonManagementApp(object):
                         self.Solar[unit_mrid]['measurementPhases'].append(measurement.phases.value)
 
     def _collect_energy_consumers(self, network):
-        for ld in network.graph.get(EnergyConsumer, {}).values():
+        for ld in network.graph.get(cim.EnergyConsumer, {}).values():
             ld_mrid = ld.mRID
             self.EnergyConsumer[ld_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
                                             'measurementPhases': []}
