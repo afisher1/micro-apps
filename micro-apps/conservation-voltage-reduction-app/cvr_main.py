@@ -3,12 +3,12 @@ import logging
 import math
 import os
 from argparse import ArgumentParser
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict
 from uuid import uuid4
 
 import cimgraph.utils as cimUtils
-from cimgraph.databases import ConnectionParameters
 from cimgraph.databases.blazegraph.blazegraph import BlazegraphConnection
 from cimgraph.databases.gridappsd.gridappsd import GridappsdConnection
 from cimgraph.models import FeederModel
@@ -185,7 +185,7 @@ class ConservationVoltageReductionController(object):
                             self.controllable_regulators[mRID]['PhasesToName'] = {}
                         self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
-                        self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
+                        self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.orderedPhases.value] = \
                             transformerTank.name
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
@@ -217,6 +217,7 @@ class ConservationVoltageReductionController(object):
         #     print(json.dumps(r['PhasesToName'], indent=4, sort_keys=True))
         if self.simulation is not None:
             self.simulation.start_simulation()
+            self.simulation.pause()
             self.simulation_id = self.simulation.simulation_id
         self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.dssContext = dss.NewContext()
@@ -224,6 +225,7 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
+        self.simulation.resume()
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
@@ -318,7 +320,7 @@ class ConservationVoltageReductionController(object):
                         if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
                             meas_base = float(meas_term.TransformerEnd[0].ratedU)
                         elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
-                            if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
+                            if isinstance(meas_term.TransformerEnd[0].BaseVoltage, cim.BaseVoltage):
                                 meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
                             else:
                                 self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
@@ -354,7 +356,7 @@ class ConservationVoltageReductionController(object):
 
     def create_opendss_context(self):
         message = {
-            'configurationType': 'DSS Base',
+            'configurationType': 'GridLAB-D Base GLM',
             'parameters': {
                 'i_fraction': '1.0',
                 'z_fraction': '0.0',
@@ -975,14 +977,14 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
-    start_time = 1728078070
+    start_time = int(datetime.now(timezone.utc).replace(microsecond=0).timestamp())
+    # start_time = 1728078070
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
-        duration=f'{24*3600}',
-    # duration=120,
+        # duration=f'{24*3600}',
+        duration=120,
         simulation_name=sim_name,
-        run_realtime=False,
+        run_realtime=True,
         pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
@@ -1013,6 +1015,14 @@ def removeDirectory(directory: Path | str):
     directory.rmdir()
 
 
+def setCimGraphEnv():
+    os.environ['CIMG_CIM_PROFILE'] = 'cimhub_2023'
+    os.environ['CIMG_URL'] = 'http://localhost:8889/bigdata/namespace/kb/sparql'
+    os.environ['CIMG_NAMESPACE'] = 'http://iec.ch/TC57/CIM100#'
+    os.environ['CIMG_IEC61970_301'] = '8'
+    os.environ['CIMG_USE_UNITS'] = 'false'
+
+
 def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     if not isinstance(control_enabled, bool):
         raise TypeError(f'Argument, control_enabled, must be a boolean.')
@@ -1022,15 +1032,12 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         raise TypeError(
             f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
     global cim, DB_CONNECTION
-    cim_profile = 'rc4_2021'
-    iec61970_301 = 7
+    setCimGraphEnv()
+    cim_profile = os.getenv("CIMG_CIM_PROFILE")
+    iec61970_301 = 8
     cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
-    # params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
-    # DB_CONNECTION = GridappsdConnection(params)
-    params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
-                                  cim_profile=cim_profile,
-                                  iec61970_301=iec61970_301)
-    DB_CONNECTION = BlazegraphConnection(params)
+    # DB_CONNECTION = GridappsdConnection()
+    DB_CONNECTION = BlazegraphConnection()
     gad_object = createGadObject()
     gad_log = gad_object.get_logger()
     platform_simulations = {}

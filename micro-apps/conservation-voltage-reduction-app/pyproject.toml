@@ -7,9 +7,8 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-gridappsd-python = {version = "^2024", allow-prereleases = true}
-opendssdirect-py = "^0.9"
-cim-graph = "^0.1.5a0"
+opendssdirect-py = "^0.9.4"
+cim-graph = {version = "^0.4.1a0", allow-prereleases = true}
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7.0"
